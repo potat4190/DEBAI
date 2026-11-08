@@ -2,6 +2,21 @@
 
 A debate-prep game for HackRPI's "In the Clouds" theme. You debate an AI opponent (Gemini) while a separate AI judge scores every exchange. The better argument boosts that side's rocket toward the Moon, Mars, Jupiter or Saturn. First to arrive wins, then you get a coaching report.
 
+**Play it live: https://debai-five.vercel.app**
+
+## How to play
+
+1. Pick or type a debate motion, choose your side, the opponent's difficulty and a destination.
+   - **Easy**: a 7th–8th grader who hesitates a lot and sometimes gets facts wrong.
+   - **Medium**: a college debater with accurate facts, still thinking out loud.
+   - **Hard**: a professional debater.
+2. Optionally turn **Interruptions** on: the AI cuts in if you stall, and you can talk over it to cut it off. Headphones recommended.
+3. Press **START**, allow the microphone, and just talk. Your turn ends when you stop; the AI answers out loud.
+4. Each exchange is scored on claim, evidence, rebuttal, relevance and confidence. The better turn boosts its rocket.
+5. When a rocket arrives (or the exchanges run out), read your coaching report.
+
+Use Chrome or Edge for live captions. Voice works in any browser that supports `MediaRecorder`; you can always type instead.
+
 ## Tech stack
 
 | Layer | Choice |
@@ -35,10 +50,14 @@ The Start screen's top bar shows which integrations are linked.
 
 ## Deploy on Vercel
 
-Import the GitHub repo in Vercel and add the variables from `.env.example` as Environment Variables. Keep in mind:
+The live site deploys from this repo: every push to `main` builds a new production deployment.
+
+To set up your own: import the GitHub repo at https://vercel.com/new (the project name must be lowercase, e.g. `debai`) and paste your `.env.local` into the Environment Variables field; Vercel splits it into separate variables. Without them the site still runs, in simulation mode. Keep in mind:
 
 - Functions have time limits, so Gemini calls use low thinking levels and the opponent's reply is streamed.
 - Request bodies are capped at 4.5 MB, so spoken turns are uploaded as compressed `webm`/`ogg` (32 kbps), never WAV.
+- The microphone only works over HTTPS, which Vercel provides (and `localhost` during development).
+- Fish Audio limits how many requests an account can run at once (5 on the Starter tier, shared by TTS and speech-to-text). The browser sends at most 3 voice requests at a time, and the server retries a busy (429) request on your other keys, then with a short backoff.
 
 ## Environment variables
 
