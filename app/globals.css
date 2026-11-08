@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* Design tokens for DebAI (dark-only space theme). Components style themselves with Tailwind utilities. */
+@theme {
+  --color-space: #05060d;
+  --color-ink: #e8eaf0;
+  --color-muted: #8c93a8;
+  --color-soft: #c9cdd8;
+  --color-body: #d8dbe3;
+  --color-line: rgb(255 255 255 / 0.1);
+  --color-line-2: rgb(255 255 255 / 0.18);
+  --color-field: #0b0d16;
+  --color-ai: #6fb6e8;
+  --color-you: #e8833a;
+  --color-ok: #7fd49b;
+  --color-bad: #e85a4f;
+  --color-warn: #e8b870;
+  --color-good: #8fcfa8;
+  --color-coral: #e8a090;
+
+  --font-display: "Bodoni Moda", serif;
+  --font-sans: "Barlow", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --animate-blink: blink 1.4s ease-in-out infinite;
+  --animate-flicker: flicker 0.12s ease-in-out infinite alternate;
+  --animate-sputter: sputter 0.3s steps(2) infinite;
+
+  @keyframes blink {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes flicker {
+    from {
+      transform: scaleY(0.85);
+    }
+    to {
+      transform: scaleY(1.1);
+    }
+  }
+  @keyframes sputter {
+    50% {
+      opacity: 0;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    background: var(--color-space);
+    color: var(--color-ink);
+  }
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  button:not(:disabled),
+  select,
+  summary {
+    cursor: pointer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
