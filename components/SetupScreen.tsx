@@ -108,13 +108,7 @@ export default function SetupScreen({
         <RevealGroup className="flex flex-wrap items-stretch justify-between gap-8" stagger={0.09}>
           {/* The AI's rocket for this destination */}
           <RevealItem className="flex flex-[1_1_260px]">
-            <VehicleCard vehicle={vehicles.ai} name="AI" color="var(--color-ai)" accent="#6FB6E8" idp="start-a">
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.p key={difficulty} {...swap} className="m-0 font-mono text-sm tracking-[3px] text-ai">
-                  IQ {profile.iq}
-                </motion.p>
-              </AnimatePresence>
-            </VehicleCard>
+            <VehicleCard vehicle={vehicles.ai} name="AI" color="var(--color-ai)" accent="#6FB6E8" idp="start-a" />
           </RevealItem>
 
           {/* Center column: title, topic, start and options */}
@@ -332,7 +326,7 @@ function VehicleCard({
   accent: string;
   idp: string;
   floatDelay?: number;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   return (
     <section className="relative flex w-full flex-col items-center justify-center gap-[18px] border border-line bg-space/50 px-5 pb-7 pt-14">

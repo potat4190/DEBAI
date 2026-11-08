@@ -564,7 +564,7 @@ export default function RaceScreen({
         <RevealItem className="flex flex-wrap items-baseline gap-x-[18px] gap-y-1.5 border border-white/12 bg-white/[0.025] px-[18px] py-3">
           <span className="flex-[1_1_300px] text-[17px] font-medium">{config.motion}</span>
           <span className="font-mono text-[11px] tracking-[2px] text-muted-foreground">
-            YOU {sideLabel(config.side)} · AI {sideLabel(otherSide(config.side))} · IQ {profile.iq}
+            YOU {sideLabel(config.side)} · AI {sideLabel(otherSide(config.side))}
           </span>
         </RevealItem>
 
