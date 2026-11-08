@@ -8,9 +8,10 @@ export type DestinationId = "moon" | "mars" | "jupiter" | "saturn";
 export type RubricKey = "claim" | "evidence" | "rebuttal" | "relevance" | "confidence";
 
 export const RUBRIC_KEYS: RubricKey[] = ["claim", "evidence", "rebuttal", "relevance", "confidence"];
-export const MAX_SCORE = 25; // 5 criteria x 5 points
-/** The spec's speed constants (K, B, STRONG_TURN) were tuned for a 20-point turn; scores are scaled to it. */
-export const SPEC_MAX_SCORE = 20;
+/** Each criterion is scored 0 to 4. */
+export const CRITERION_MAX = 4;
+/** A turn is out of 20 (5 criteria x 4 points), the scale the spec's speed constants were tuned for. */
+export const MAX_SCORE = RUBRIC_KEYS.length * CRITERION_MAX;
 export const TURN_SECONDS = 90; // user turn timer: room to think before and while you talk
 export const SECONDS_PER_TURN = 60; // simulated seconds each exchange advances the race
 
@@ -35,6 +36,42 @@ export const DESTINATIONS: Destination[] = [
 
 export function getDestination(id: DestinationId): Destination {
   return DESTINATIONS.find((d) => d.id === id) ?? DESTINATIONS[0];
+}
+
+// ---------- Launch vehicles ----------
+// Each destination pairs two real rockets: one flown by you, one by the AI. No rocket repeats.
+
+export type RocketId = "saturn-v" | "atlas-v" | "starship" | "falcon-heavy" | "titan-iiie" | "ariane-5" | "sls" | "new-glenn";
+
+export const ROCKET_NAMES: Record<RocketId, string> = {
+  "saturn-v": "Saturn V",
+  "atlas-v": "Atlas V",
+  starship: "Starship",
+  "falcon-heavy": "Falcon Heavy",
+  "titan-iiie": "Titan IIIE",
+  "ariane-5": "Ariane 5",
+  sls: "SLS",
+  "new-glenn": "New Glenn",
+};
+
+const LINEUP: Record<DestinationId, { user: RocketId; ai: RocketId }> = {
+  moon: { user: "saturn-v", ai: "atlas-v" },
+  mars: { user: "starship", ai: "falcon-heavy" },
+  jupiter: { user: "titan-iiie", ai: "ariane-5" },
+  saturn: { user: "sls", ai: "new-glenn" },
+};
+
+export interface Vehicle {
+  id: RocketId;
+  name: string; // e.g. "Saturn V"
+  tag: string; // upper-case label for the HUD, e.g. "SATURN V"
+}
+
+/** The two rockets racing to a destination. */
+export function vehiclesFor(id: DestinationId): { user: Vehicle; ai: Vehicle } {
+  const pair = LINEUP[id] ?? LINEUP.moon;
+  const v = (r: RocketId): Vehicle => ({ id: r, name: ROCKET_NAMES[r], tag: ROCKET_NAMES[r].toUpperCase() });
+  return { user: v(pair.user), ai: v(pair.ai) };
 }
 
 export const TOPICS: string[] = [
@@ -76,7 +113,7 @@ export type Rubric = Record<RubricKey, number>;
 
 export interface TurnScore {
   rubric: Rubric;
-  total: number; // 0-25
+  total: number; // 0-20
   /** How the confidence score was measured, e.g. "2 long pauses, 5 fillers". */
   delivery?: string;
   reason: string; // one-line explanation
@@ -162,9 +199,8 @@ export function advanceRocket(
   oppScore: number,
   fallacy: boolean,
 ): { next: RocketState; dv: number } {
-  // Scores are out of 25 (five criteria); the spec's constants expect 20, so scale them first.
-  const S = (score / MAX_SCORE) * SPEC_MAX_SCORE;
-  const S_opp = (oppScore / MAX_SCORE) * SPEC_MAX_SCORE;
+  const S = score;
+  const S_opp = oppScore;
   const streak = S >= STRONG_TURN ? r.streak + 1 : 0;
   let dv = S * dest.K + Math.max(0, S - S_opp) * dest.B;
   if (streak >= STREAK_LENGTH) dv += MOMENTUM_K_MULTIPLIER * dest.K;
@@ -415,7 +451,7 @@ export function formatClock(ms: number): string {
 
 export function clampScore(n: unknown): number {
   const x = Math.round(Number(n));
-  return Number.isFinite(x) ? Math.min(5, Math.max(0, x)) : 0;
+  return Number.isFinite(x) ? Math.min(CRITERION_MAX, Math.max(0, x)) : 0;
 }
 
 // ---------- Confidence (the fifth judging criterion) ----------
@@ -424,8 +460,8 @@ export function clampScore(n: unknown): number {
 
 /** A silence this long in the middle of a turn counts as a long pause. */
 export const LONG_PAUSE_MS = 1500;
-/** Typed turns have no voice to measure, so they get a neutral score. */
-export const TYPED_CONFIDENCE = 3;
+/** Typed turns have no voice to measure, so they get the middle score. */
+export const TYPED_CONFIDENCE = 2;
 
 export interface Delivery {
   spoken: boolean; // false = typed (confidence can't be measured)
@@ -445,7 +481,7 @@ export function confidenceScore(d: Delivery): { score: number; note: string } {
   const per100 = 100 / Math.max(d.words, 30);
   const panic = Math.min(3, ((d.fillers + d.stutters) * per100) / PANIC_PER_POINT);
   const pauses = Math.min(3, (d.longPauses * per100) / PAUSES_PER_POINT);
-  const score = Math.max(0, Math.min(5, Math.round(5 - panic - pauses)));
+  const score = Math.max(0, Math.min(CRITERION_MAX, Math.round(CRITERION_MAX - panic - pauses)));
   const parts = [
     d.longPauses ? `${d.longPauses} long pause${d.longPauses === 1 ? "" : "s"}` : "",
     d.fillers ? `${d.fillers} filler${d.fillers === 1 ? "" : "s"}` : "",

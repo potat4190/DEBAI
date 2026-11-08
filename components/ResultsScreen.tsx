@@ -2,11 +2,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
+  CRITERION_MAX,
   MAX_SCORE,
   RUBRIC_KEYS,
   formatClock,
   getDestination,
   rubricAverages,
+  vehiclesFor,
   weakestCategory,
   type GameConfig,
   type Report,
@@ -37,6 +39,7 @@ export default function ResultsScreen({
   onRematch: () => void;
 }) {
   const dest = getDestination(config.destination);
+  const vehicles = vehiclesFor(dest.id);
   const { exchanges, outcome } = summary;
   const won = outcome.winner === "user";
 
@@ -102,7 +105,7 @@ export default function ResultsScreen({
         <span>DEB“AI”-01 · MISSION DEBRIEF</span>
         <span className="flex items-center gap-2">
           <Dot color={won ? "var(--color-ok)" : "var(--color-bad)"} />
-          {won ? "MISSION COMPLETE · TARGET REACHED" : "MISSION ENDED · VEHICLE A AHEAD"}
+          {won ? "MISSION COMPLETE · TARGET REACHED" : `MISSION ENDED · ${vehicles.ai.tag} AHEAD`}
         </span>
         <span>MET T+ {formatClock(summary.elapsedMs)}</span>
       </TopBar>
@@ -120,8 +123,8 @@ export default function ResultsScreen({
               {won ? "YOU WON" : "YOU LOST"}
             </motion.h1>
             <dl className="mt-2.5 grid grid-cols-2 gap-px border border-line bg-line font-mono">
-              <Kpi label="TOTAL SCORE · B" color="var(--color-you)">{stats.userTotal}</Kpi>
-              <Kpi label="TOTAL SCORE · A" color="var(--color-ai)">{stats.aiTotal}</Kpi>
+              <Kpi label={`TOTAL SCORE · ${vehicles.user.tag}`} color="var(--color-you)">{stats.userTotal}</Kpi>
+              <Kpi label={`TOTAL SCORE · ${vehicles.ai.tag}`} color="var(--color-ai)">{stats.aiTotal}</Kpi>
               <Kpi label="EXCHANGES">
                 {exchanges.length} <span className="text-xs text-muted">/ {dest.maxExchanges} MAX</span>
               </Kpi>
@@ -136,7 +139,7 @@ export default function ResultsScreen({
               animate={{ top: won ? 40 : 110 }}
               transition={{ duration: 1.6, ease: [0.22, 1, 0.36, 1] }}
             >
-              <Rocket idp="res-b" accent="#E8833A" width={60} flame={won} />
+              <Rocket model={vehicles.user.id} idp="res-b" accent="#E8833A" width={60} flame={won ? "blast" : "idle"} />
             </motion.div>
             <motion.div
               className="absolute left-[130px] rotate-[10deg]"
@@ -144,7 +147,7 @@ export default function ResultsScreen({
               animate={{ top: won ? 120 : 30 }}
               transition={{ duration: 1.6, ease: [0.22, 1, 0.36, 1], delay: 0.1 }}
             >
-              <Rocket idp="res-a" accent="#6FB6E8" width={52} flame={!won} />
+              <Rocket model={vehicles.ai.id} idp="res-a" accent="#6FB6E8" width={52} flame={won ? "idle" : "blast"} />
             </motion.div>
           </div>
         </div>
@@ -156,7 +159,7 @@ export default function ResultsScreen({
               <div key={k} className={cx("flex flex-col gap-1 bg-space p-3.5", k === stats.weakest && "shadow-[inset_0_-2px_0_var(--color-coral)]")}>
                 <span className="text-[10px] tracking-[2px] text-muted">{k.toUpperCase()}</span>
                 <span className="text-[22px]">
-                  {stats.avg[k].toFixed(1)} <span className="text-xs text-muted">/ 5</span>
+                  {stats.avg[k].toFixed(1)} <span className="text-xs text-muted">/ {CRITERION_MAX}</span>
                 </span>
               </div>
             ))}
@@ -173,7 +176,7 @@ export default function ResultsScreen({
             <ReportText>{report?.strongPoints ?? placeholder}</ReportText>
           </ReportRow>
 
-          <ReportRow n="02" title={`WEAKEST CATEGORY · ${stats.weakest.toUpperCase()} · AVG ${stats.avg[stats.weakest].toFixed(1)} / 5`} color="var(--color-coral)">
+          <ReportRow n="02" title={`WEAKEST CATEGORY · ${stats.weakest.toUpperCase()} · AVG ${stats.avg[stats.weakest].toFixed(1)} / ${CRITERION_MAX}`} color="var(--color-coral)">
             <ReportText>{report?.weakestExplanation ?? placeholder}</ReportText>
           </ReportRow>
 
@@ -225,13 +228,13 @@ export default function ResultsScreen({
           {exchanges.map((e) => (
             <div key={e.index} className="border-t border-white/8 py-3">
               <p className="mb-2 mt-0 font-mono text-[10px] tracking-[2px] text-muted">
-                EXCHANGE {String(e.index).padStart(2, "0")} · B {e.judge.user.total} · A {e.judge.ai.total}
+                EXCHANGE {String(e.index).padStart(2, "0")} · {vehicles.user.tag} {e.judge.user.total} · {vehicles.ai.tag} {e.judge.ai.total}
               </p>
               <p className="mb-1.5 mt-0 text-sm leading-[1.55] text-body">
                 <span className="text-you">{config.callsign}:</span> {e.userText || "(no argument)"}
               </p>
               <p className="mb-1.5 mt-0 text-sm leading-[1.55] text-body">
-                <span className="text-ai">AI:</span> {e.aiText}
+                <span className="text-ai">{vehicles.ai.name} (AI):</span> {e.aiText}
               </p>
             </div>
           ))}

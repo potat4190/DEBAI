@@ -1,7 +1,7 @@
 "use client";
-import type { CSSProperties } from "react";
-import { motion } from "motion/react";
-import type { DestinationId } from "@/lib/game";
+import { useRef, type CSSProperties, type ReactNode } from "react";
+import { motion, useAnimationFrame, useMotionValue, useReducedMotion, useTransform } from "motion/react";
+import type { DestinationId, RocketId } from "@/lib/game";
 
 // ---------- Planet surfaces (from the design) ----------
 
@@ -109,102 +109,446 @@ export function EarthHorizon({ height = 200, label = true }: { height?: number; 
   );
 }
 
-// ---------- Rocket (from the design), with an optional exhaust flame ----------
+// ---------- Scrolling starfield (makes the rockets look like they're climbing) ----------
+
+// Each star is its own repeating background tile, so a handful of gradients reads as a random field.
+// Every tile height divides LOOP_PX, so the layers can wrap without a visible jump.
+const LOOP_PX = 1080;
+type Star = [w: number, h: number, x: number, y: number, rx: number, ry: number, alpha: number];
+
+const FAR_STARS: Star[] = [
+  [131, 108, 40, 20, 0.8, 0.8, 0.5], [173, 120, 90, 70, 0.7, 0.7, 0.45], [197, 135, 20, 100, 1, 1, 0.6],
+  [229, 180, 150, 40, 0.9, 0.9, 0.55], [263, 216, 60, 160, 1.1, 1.1, 0.7], [307, 270, 200, 90, 0.8, 0.8, 0.5],
+  [149, 135, 110, 30, 0.6, 0.6, 0.4], [211, 216, 30, 200, 0.7, 0.7, 0.45], [251, 360, 170, 300, 0.9, 0.9, 0.55],
+];
+const NEAR_STARS: Star[] = [
+  [167, 180, 50, 60, 0.9, 7, 0.55], [239, 270, 180, 30, 1, 9, 0.6], [283, 360, 90, 250, 1.1, 10, 0.65],
+  [193, 216, 140, 120, 0.8, 6, 0.5], [317, 540, 250, 400, 1.2, 12, 0.7], [223, 270, 20, 190, 0.9, 8, 0.5],
+];
+
+const starImage = (stars: Star[]) =>
+  stars.map(([, , x, y, rx, ry, a]) => `radial-gradient(${rx}px ${ry}px at ${x}px ${y}px, rgba(255,255,255,${a}), transparent)`).join(", ");
+const starSize = (stars: Star[]) => stars.map(([w, h]) => `${w}px ${h}px`).join(", ");
+const starPosition = (stars: Star[], y: number) => stars.map(() => `0px ${y}px`).join(", ");
+
+// Scroll speeds in px/s: a slow drift while cruising, a rush during a boost.
+const CRUISE = { far: 12, near: 34 };
+const RUSH = { far: 160, near: 460 };
+
+/** Two layers of stars sliding down behind the rockets, faster while a boost is playing. */
+export function SpeedField({ boosting }: { boosting: boolean }) {
+  const reduce = useReducedMotion();
+  const far = useMotionValue(0);
+  const near = useMotionValue(0);
+  const speed = useRef({ ...CRUISE });
+  const boostingRef = useRef(boosting);
+  boostingRef.current = boosting;
+
+  useAnimationFrame((_, delta) => {
+    if (reduce) return;
+    const target = boostingRef.current ? RUSH : CRUISE;
+    const ease = Math.min(1, delta / 450); // speed up and slow down smoothly
+    speed.current.far += (target.far - speed.current.far) * ease;
+    speed.current.near += (target.near - speed.current.near) * ease;
+    far.set((far.get() + (speed.current.far * delta) / 1000) % LOOP_PX);
+    near.set((near.get() + (speed.current.near * delta) / 1000) % LOOP_PX);
+  });
+
+  const farPos = useTransform(far, (y) => starPosition(FAR_STARS, y));
+  const nearPos = useTransform(near, (y) => starPosition(NEAR_STARS, y));
+
+  return (
+    <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+      <motion.div
+        className="absolute inset-0"
+        style={{ backgroundImage: starImage(FAR_STARS), backgroundSize: starSize(FAR_STARS), backgroundPosition: farPos }}
+      />
+      <motion.div
+        className="absolute inset-0"
+        style={{ backgroundImage: starImage(NEAR_STARS), backgroundSize: starSize(NEAR_STARS), backgroundPosition: nearPos }}
+        initial={false}
+        animate={{ opacity: boosting ? 0.95 : 0.35 }}
+        transition={{ duration: 0.6 }}
+      />
+    </div>
+  );
+}
+
+// ---------- Rockets ----------
+// Eight real launch vehicles drawn from simple shaded parts in a 120 x 260 box. Every engine
+// nozzle ends on the line y = NOZZLE_Y so the exhaust lines up for all of them.
+
+const NOZZLE_Y = 216;
+
+const WHITE = "#ECEEF1";
+const OFF_WHITE = "#DCDFE4";
+const BLACK = "#1B1C20";
+const DARK = "#2B2D33";
+const STEEL = "#BCC1C8";
+const GREY = "#7D828B";
+
+interface Part {
+  x: number; // centre line
+  y: number; // top edge (base, for noses)
+  w: number;
+  h: number;
+  fill: string;
+  s: string; // the shading overlay
+}
+
+/** A cylinder section: flat colour plus the shared cylindrical shading. */
+function Cyl({ x, y, w, h, fill, s }: Part) {
+  return (
+    <>
+      <rect x={x - w / 2} y={y} width={w} height={h} fill={fill} />
+      <rect x={x - w / 2} y={y} width={w} height={h} fill={s} />
+    </>
+  );
+}
+
+/** A tapered section, `wt` wide at the top and `w` at the bottom. */
+function Taper({ x, y, w, h, wt, fill, s }: Part & { wt: number }) {
+  const d = `M${x - wt / 2} ${y}H${x + wt / 2}L${x + w / 2} ${y + h}H${x - w / 2}Z`;
+  return (
+    <>
+      <path d={d} fill={fill} />
+      <path d={d} fill={s} />
+    </>
+  );
+}
+
+/** A nose cone standing on `y`, pointed (ogive) or blunt (a big rounded fairing). */
+function Nose({ x, y, w, h, fill, s, blunt = false }: Part & { blunt?: boolean }) {
+  const l = x - w / 2;
+  const r = x + w / 2;
+  const top = y - h;
+  const d = blunt
+    ? `M${l} ${y}C${l} ${top + h * 0.2} ${x - w * 0.32} ${top} ${x} ${top}C${x + w * 0.32} ${top} ${r} ${top + h * 0.2} ${r} ${y}Z`
+    : `M${l} ${y}C${l} ${y - h * 0.55} ${x - w * 0.12} ${top} ${x} ${top}C${x + w * 0.12} ${top} ${r} ${y - h * 0.55} ${r} ${y}Z`;
+  return (
+    <>
+      <path d={d} fill={fill} />
+      <path d={d} fill={s} />
+    </>
+  );
+}
+
+/** An engine bell ending on the nozzle line. */
+function Bell({ x, w, s, h = 10 }: { x: number; w: number; s: string; h?: number }) {
+  const y = NOZZLE_Y - h;
+  const d = `M${x - w * 0.3} ${y}H${x + w * 0.3}L${x + w / 2} ${NOZZLE_Y}H${x - w / 2}Z`;
+  return (
+    <>
+      <path d={d} fill={DARK} />
+      <path d={d} fill={s} />
+    </>
+  );
+}
+
+/** A fin attached at `x`, sweeping out to the left (-1) or right (1). */
+function Fin({ x, y, w, h, dir, fill }: { x: number; y: number; w: number; h: number; dir: 1 | -1; fill: string }) {
+  return <path d={`M${x} ${y}L${x + dir * w} ${y + h * 0.7}V${y + h}H${x}Z`} fill={fill} stroke="#000" strokeOpacity={0.2} strokeWidth={0.4} />;
+}
+
+/** A launch escape tower on top of a crew capsule whose tip is at `y`. */
+function Tower({ x, y, h }: { x: number; y: number; h: number }) {
+  return (
+    <g>
+      <path d={`M${x - 2.5} ${y}L${x} ${y - h * 0.45}L${x + 2.5} ${y}`} stroke="#9CA1AB" strokeWidth={0.7} fill="none" />
+      <rect x={x - 1.3} y={y - h * 0.9} width={2.6} height={h * 0.45} fill="#C9CCD2" />
+      <path d={`M${x - 1.3} ${y - h * 0.9}L${x} ${y - h}L${x + 1.3} ${y - h * 0.9}Z`} fill="#C9CCD2" />
+    </g>
+  );
+}
+
+interface Design {
+  /** Engine nozzles as [centre x, width]; the exhaust is drawn under each. */
+  nozzles: [number, number][];
+  body: (s: string, accent: string) => ReactNode;
+}
+
+const DESIGNS: Record<RocketId, Design> = {
+  // White three-stage stack with the black roll pattern, four fins and an escape tower.
+  "saturn-v": {
+    nozzles: [[50, 8], [60, 8], [70, 8]],
+    body: (s, a) => (
+      <>
+        <Bell x={50} w={8} s={s} />
+        <Bell x={60} w={8} s={s} />
+        <Bell x={70} w={8} s={s} />
+        <Cyl x={60} y={118} w={30} h={88} fill={WHITE} s={s} />
+        <Cyl x={60} y={118} w={30} h={9} fill={BLACK} s={s} />
+        <Cyl x={60} y={190} w={30} h={8} fill={BLACK} s={s} />
+        <rect x={45} y={146} width={7.5} height={34} fill={BLACK} opacity={0.9} />
+        <rect x={67.5} y={146} width={7.5} height={34} fill={BLACK} opacity={0.9} />
+        <Fin x={45} y={180} w={8} h={26} dir={-1} fill={OFF_WHITE} />
+        <Fin x={75} y={180} w={8} h={26} dir={1} fill={OFF_WHITE} />
+        <Cyl x={60} y={64} w={30} h={54} fill={WHITE} s={s} />
+        <Cyl x={60} y={64} w={30} h={5} fill={BLACK} s={s} />
+        <Cyl x={60} y={96} w={30} h={3} fill={a} s={s} />
+        <Taper x={60} y={56} wt={22} w={30} h={8} fill={WHITE} s={s} />
+        <Cyl x={60} y={34} w={22} h={22} fill={WHITE} s={s} />
+        <Cyl x={60} y={40} w={22} h={4} fill={BLACK} s={s} />
+        <Taper x={60} y={27} wt={14} w={22} h={7} fill={OFF_WHITE} s={s} />
+        <Taper x={60} y={19} wt={4} w={14} h={8} fill="#C9CCD2" s={s} />
+        <Tower x={60} y={19} h={16} />
+      </>
+    ),
+  },
+  // Copper core with a wide white payload fairing and two slim solid boosters.
+  "atlas-v": {
+    nozzles: [[44, 7], [56, 7], [64, 7], [76, 7]],
+    body: (s, a) => (
+      <>
+        <Bell x={44} w={7} s={s} />
+        <Bell x={76} w={7} s={s} />
+        <Bell x={56} w={7} s={s} />
+        <Bell x={64} w={7} s={s} />
+        <Cyl x={44} y={150} w={8} h={56} fill={WHITE} s={s} />
+        <Nose x={44} y={150} w={8} h={14} fill={WHITE} s={s} />
+        <Cyl x={76} y={150} w={8} h={56} fill={WHITE} s={s} />
+        <Nose x={76} y={150} w={8} h={14} fill={WHITE} s={s} />
+        <Cyl x={60} y={104} w={24} h={102} fill="#C8743A" s={s} />
+        <Cyl x={60} y={104} w={24} h={4} fill={DARK} s={s} />
+        <Cyl x={60} y={198} w={24} h={8} fill={DARK} s={s} />
+        <Cyl x={60} y={130} w={24} h={3} fill={a} s={s} />
+        <Taper x={60} y={96} wt={30} w={24} h={8} fill={WHITE} s={s} />
+        <Cyl x={60} y={46} w={30} h={50} fill={WHITE} s={s} />
+        <Nose x={60} y={46} w={30} h={34} fill={WHITE} s={s} />
+      </>
+    ),
+  },
+  // Stainless-steel booster and ship, with a dark heat shield and flaps.
+  starship: {
+    nozzles: [[52, 7], [60, 7], [68, 7]],
+    body: (s, a) => (
+      <>
+        <Bell x={52} w={7} s={s} />
+        <Bell x={60} w={7} s={s} />
+        <Bell x={68} w={7} s={s} />
+        <Cyl x={60} y={112} w={26} h={94} fill={STEEL} s={s} />
+        <Cyl x={60} y={150} w={26} h={3} fill={a} s={s} />
+        <rect x={43} y={116} width={4} height={7} fill={DARK} />
+        <rect x={73} y={116} width={4} height={7} fill={DARK} />
+        <Cyl x={60} y={104} w={26} h={8} fill={DARK} s={s} />
+        <Cyl x={60} y={40} w={26} h={64} fill="#C9CED5" s={s} />
+        <Nose x={60} y={40} w={26} h={30} fill="#C9CED5" s={s} />
+        <rect x={60} y={40} width={13} height={64} fill="#1F2227" opacity={0.92} />
+        <path d="M60 40V10C63.1 10 73 23.5 73 40Z" fill="#1F2227" opacity={0.92} />
+        <rect x={47} y={40} width={26} height={64} fill={s} />
+        <Fin x={47} y={40} w={6} h={12} dir={-1} fill={DARK} />
+        <Fin x={73} y={40} w={6} h={12} dir={1} fill={DARK} />
+        <Fin x={47} y={84} w={8} h={20} dir={-1} fill={DARK} />
+        <Fin x={73} y={84} w={8} h={20} dir={1} fill={DARK} />
+      </>
+    ),
+  },
+  // Three white cores side by side, carbon nose cones on the side boosters.
+  "falcon-heavy": {
+    nozzles: [[43, 9], [60, 9], [77, 9]],
+    body: (s, a) => (
+      <>
+        {[43, 77].map((x) => (
+          <g key={x}>
+            <Bell x={x} w={9} s={s} />
+            <Cyl x={x} y={96} w={16} h={110} fill={WHITE} s={s} />
+            <Nose x={x} y={96} w={16} h={20} fill="#3A3D44" s={s} />
+            <Cyl x={x} y={194} w={16} h={12} fill={BLACK} s={s} />
+            <rect x={x - 9.5} y={100} width={3} height={5} fill={DARK} />
+            <rect x={x + 6.5} y={100} width={3} height={5} fill={DARK} />
+          </g>
+        ))}
+        <Bell x={60} w={9} s={s} />
+        <Cyl x={60} y={66} w={16} h={140} fill={WHITE} s={s} />
+        <Cyl x={60} y={194} w={16} h={12} fill={BLACK} s={s} />
+        <Cyl x={60} y={120} w={16} h={3} fill={a} s={s} />
+        <Cyl x={60} y={58} w={16} h={8} fill={BLACK} s={s} />
+        <Cyl x={60} y={34} w={16} h={24} fill={WHITE} s={s} />
+        <Taper x={60} y={30} wt={20} w={16} h={4} fill={WHITE} s={s} />
+        <Cyl x={60} y={18} w={20} h={12} fill={WHITE} s={s} />
+        <Nose x={60} y={18} w={20} h={16} fill={WHITE} s={s} />
+      </>
+    ),
+  },
+  // Grey core with two black-and-white striped solid boosters and a long Centaur shroud.
+  "titan-iiie": {
+    nozzles: [[41, 11], [60, 8], [79, 11]],
+    body: (s, a) => (
+      <>
+        <Bell x={41} w={11} s={s} />
+        <Bell x={60} w={8} s={s} />
+        <Bell x={79} w={11} s={s} />
+        {[41, 79].map((x) => (
+          <g key={x}>
+            <Cyl x={x} y={96} w={14} h={110} fill={WHITE} s={s} />
+            <Nose x={x} y={96} w={14} h={16} fill={WHITE} s={s} />
+            {[112, 132, 152, 172, 192].map((y) => (
+              <Cyl key={y} x={x} y={y} w={14} h={7} fill={BLACK} s={s} />
+            ))}
+          </g>
+        ))}
+        <Cyl x={60} y={78} w={20} h={128} fill="#9AA0A8" s={s} />
+        <Cyl x={60} y={120} w={20} h={3} fill={a} s={s} />
+        <Cyl x={60} y={72} w={22} h={6} fill={DARK} s={s} />
+        <Cyl x={60} y={30} w={22} h={42} fill={WHITE} s={s} />
+        <Nose x={60} y={30} w={22} h={24} fill={WHITE} s={s} />
+      </>
+    ),
+  },
+  // White core flanked by two tall pointed boosters, under a big rounded fairing.
+  "ariane-5": {
+    nozzles: [[40, 10], [60, 10], [80, 10]],
+    body: (s, a) => (
+      <>
+        <Bell x={40} w={10} s={s} />
+        <Bell x={60} w={10} s={s} />
+        <Bell x={80} w={10} s={s} />
+        {[40, 80].map((x) => (
+          <g key={x}>
+            <Cyl x={x} y={84} w={14} h={122} fill="#E6E7EA" s={s} />
+            <Nose x={x} y={84} w={14} h={22} fill="#E6E7EA" s={s} />
+            <Cyl x={x} y={130} w={14} h={2} fill={GREY} s={s} />
+            <Cyl x={x} y={196} w={14} h={10} fill={GREY} s={s} />
+          </g>
+        ))}
+        <Cyl x={60} y={64} w={24} h={142} fill={WHITE} s={s} />
+        <Cyl x={60} y={104} w={24} h={3} fill={a} s={s} />
+        <Taper x={60} y={58} wt={28} w={24} h={6} fill={GREY} s={s} />
+        <Cyl x={60} y={36} w={28} h={22} fill={WHITE} s={s} />
+        <Nose x={60} y={36} w={28} h={26} fill={WHITE} s={s} blunt />
+      </>
+    ),
+  },
+  // Orange foam core, two white boosters with black bands, Orion capsule and escape tower.
+  sls: {
+    nozzles: [[39, 10], [54, 8], [66, 8], [81, 10]],
+    body: (s, a) => (
+      <>
+        <Bell x={39} w={10} s={s} />
+        <Bell x={54} w={8} s={s} />
+        <Bell x={66} w={8} s={s} />
+        <Bell x={81} w={10} s={s} />
+        {[39, 81].map((x) => (
+          <g key={x}>
+            <Cyl x={x} y={74} w={12} h={132} fill={WHITE} s={s} />
+            <Nose x={x} y={74} w={12} h={16} fill={WHITE} s={s} />
+            <Cyl x={x} y={92} w={12} h={4} fill={BLACK} s={s} />
+            <Cyl x={x} y={194} w={13} h={12} fill={BLACK} s={s} />
+          </g>
+        ))}
+        <Cyl x={60} y={82} w={26} h={124} fill="#D9772F" s={s} />
+        <Cyl x={60} y={140} w={26} h={3} fill={a} s={s} />
+        <Taper x={60} y={64} wt={18} w={26} h={18} fill={WHITE} s={s} />
+        <Cyl x={60} y={50} w={18} h={14} fill={WHITE} s={s} />
+        <Taper x={60} y={34} wt={6} w={18} h={16} fill={OFF_WHITE} s={s} />
+        <Tower x={60} y={34} h={22} />
+      </>
+    ),
+  },
+  // Tall white single stick with a wide 7 m fairing, strakes and landing legs.
+  "new-glenn": {
+    nozzles: [[52, 7], [60, 7], [68, 7]],
+    body: (s, a) => (
+      <>
+        <Bell x={52} w={7} s={s} />
+        <Bell x={60} w={7} s={s} />
+        <Bell x={68} w={7} s={s} />
+        <Cyl x={60} y={118} w={24} h={88} fill={WHITE} s={s} />
+        <Cyl x={60} y={198} w={24} h={8} fill={DARK} s={s} />
+        <Fin x={48} y={168} w={7} h={30} dir={-1} fill={OFF_WHITE} />
+        <Fin x={72} y={168} w={7} h={30} dir={1} fill={OFF_WHITE} />
+        <Fin x={48} y={120} w={5} h={10} dir={-1} fill={DARK} />
+        <Fin x={72} y={120} w={5} h={10} dir={1} fill={DARK} />
+        <Cyl x={60} y={150} w={24} h={3} fill={a} s={s} />
+        <Cyl x={60} y={112} w={24} h={6} fill={DARK} s={s} />
+        <Cyl x={60} y={86} w={24} h={26} fill={WHITE} s={s} />
+        <Taper x={60} y={80} wt={30} w={24} h={6} fill={WHITE} s={s} />
+        <Cyl x={60} y={30} w={30} h={50} fill={WHITE} s={s} />
+        <Nose x={60} y={30} w={30} h={22} fill={WHITE} s={s} blunt />
+      </>
+    ),
+  },
+};
+
+/** off = on the pad, idle = cruising burn, blast = speed boost, stall = sputtering after a fallacy. */
+export type FlameState = "off" | "idle" | "blast" | "stall";
+
+const FLAME_SHAPE: Record<Exclude<FlameState, "off">, { scaleX: number; scaleY: number; opacity: number }> = {
+  idle: { scaleX: 0.9, scaleY: 0.6, opacity: 0.9 },
+  blast: { scaleX: 1.45, scaleY: 3, opacity: 1 },
+  stall: { scaleX: 0.8, scaleY: 0.45, opacity: 0.5 },
+};
 
 export function Rocket({
+  model,
   idp,
   accent,
   width = 96,
-  flame = false,
-  stalled = false,
+  flame = "off",
 }: {
+  model: RocketId;
   idp: string; // unique prefix for SVG ids
-  accent: string;
+  accent: string; // team colour, shown as a band on the rocket
   width?: number;
-  flame?: boolean;
-  stalled?: boolean;
+  flame?: FlameState;
 }) {
   const id = (s: string) => `${idp}-${s}`;
   const url = (s: string) => `url(#${id(s)})`;
+  const design = DESIGNS[model];
   return (
-    <svg width={width} height={(width * 260) / 120} viewBox="0 0 120 260" fill="none" aria-hidden="true">
+    <svg width={width} height={(width * 260) / 120} viewBox="0 0 120 260" fill="none" overflow="visible" aria-hidden="true">
       <defs>
-        <linearGradient id={id("t")} x1="0" x2="1">
-          <stop offset="0" stopColor="#5A2A0C" /><stop offset=".2" stopColor="#B35A22" /><stop offset=".36" stopColor="#D47C3C" />
-          <stop offset=".55" stopColor="#BF6629" /><stop offset=".8" stopColor="#874014" /><stop offset="1" stopColor="#4E240A" />
-        </linearGradient>
-        <linearGradient id={id("s")} x1="0" x2="1">
-          <stop offset="0" stopColor="#6F747D" /><stop offset=".22" stopColor="#DADDE2" /><stop offset=".36" stopColor="#F7F8FA" />
-          <stop offset=".6" stopColor="#D0D3D9" /><stop offset=".85" stopColor="#979CA6" /><stop offset="1" stopColor="#666B74" />
-        </linearGradient>
-        <linearGradient id={id("o")} x1="0" x2="1">
-          <stop offset="0" stopColor="#7F848E" /><stop offset=".26" stopColor="#E6E8EC" /><stop offset=".4" stopColor="#FAFBFC" />
-          <stop offset=".66" stopColor="#D3D6DC" /><stop offset="1" stopColor="#777C86" />
-        </linearGradient>
-        <linearGradient id={id("w")} x1="0" x2="1">
-          <stop offset="0" stopColor="#8E939D" /><stop offset=".3" stopColor="#E4E6EA" /><stop offset=".5" stopColor="#F2F3F5" />
-          <stop offset=".72" stopColor="#DADDE2" /><stop offset="1" stopColor="#858A94" />
-        </linearGradient>
-        <linearGradient id={id("e")} x1="0" x2="1">
-          <stop offset="0" stopColor="#24262B" /><stop offset=".4" stopColor="#5C6068" /><stop offset="1" stopColor="#1E2024" />
+        <linearGradient id={id("sh")} x1="0" x2="1">
+          <stop offset="0" stopColor="#000" stopOpacity=".5" />
+          <stop offset=".18" stopColor="#000" stopOpacity=".12" />
+          <stop offset=".34" stopColor="#fff" stopOpacity=".28" />
+          <stop offset=".5" stopColor="#fff" stopOpacity=".06" />
+          <stop offset=".78" stopColor="#000" stopOpacity=".22" />
+          <stop offset="1" stopColor="#000" stopOpacity=".55" />
         </linearGradient>
         <linearGradient id={id("f")} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#FFF4D6" /><stop offset=".25" stopColor="#FFC56B" />
-          <stop offset=".6" stopColor="#F2742B" stopOpacity=".8" /><stop offset="1" stopColor="#F2742B" stopOpacity="0" />
+          <stop offset="0" stopColor="#FFF4D6" />
+          <stop offset=".25" stopColor="#FFC56B" />
+          <stop offset=".6" stopColor="#F2742B" stopOpacity=".8" />
+          <stop offset="1" stopColor="#F2742B" stopOpacity="0" />
         </linearGradient>
-        <clipPath id={id("c")}>
-          <path d="M44 198V50C44 30 52 16 60 8C68 16 76 30 76 50V198Q60 206 44 198Z" />
-        </clipPath>
-        <filter id={id("n")} x="0" y="0" width="100%" height="100%">
-          <feTurbulence type="fractalNoise" baseFrequency="0.06 1.1" numOctaves={2} seed={7} />
-          <feColorMatrix values="0 0 0 0 0.15  0 0 0 0 0.06  0 0 0 0 0.02  0 0 0 1.2 -0.45" />
-        </filter>
         <filter id={id("b")} x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="3" />
+          <feGaussianBlur stdDeviation="6" />
         </filter>
       </defs>
 
-      {flame && (
-        <g className={stalled ? "origin-[60px_216px] animate-sputter opacity-40" : "origin-[60px_216px] animate-flicker"}>
-          <path d="M50 216Q60 262 70 216Z" fill={url("f")} />
-          <path d="M20 216Q29 248 38 216Z" fill={url("f")} opacity=".85" />
-          <path d="M82 216Q91 248 100 216Z" fill={url("f")} opacity=".85" />
-        </g>
+      {flame !== "off" && (
+        <>
+          <motion.ellipse
+            cx={60}
+            cy={NOZZLE_Y + 16}
+            rx={34}
+            ry={18}
+            fill="#FFB45A"
+            filter={url("b")}
+            initial={false}
+            animate={{ opacity: flame === "blast" ? 0.75 : flame === "idle" ? 0.14 : 0 }}
+            transition={{ duration: 0.3 }}
+          />
+          <motion.g
+            style={{ originX: 0.5, originY: 0 }}
+            initial={false}
+            animate={FLAME_SHAPE[flame]}
+            transition={flame === "blast" ? { type: "spring", stiffness: 260, damping: 13 } : { duration: 0.6, ease: "easeOut" }}
+          >
+            <g className={`origin-top [transform-box:fill-box] ${flame === "stall" ? "animate-sputter" : "animate-flicker"}`}>
+              {design.nozzles.map(([x, w]) => (
+                <g key={x}>
+                  <path d={`M${x - w / 2} ${NOZZLE_Y}Q${x} ${NOZZLE_Y + w * 4.5} ${x + w / 2} ${NOZZLE_Y}Z`} fill={url("f")} />
+                  <path d={`M${x - w / 4} ${NOZZLE_Y}Q${x} ${NOZZLE_Y + w * 2.2} ${x + w / 4} ${NOZZLE_Y}Z`} fill="#FFF6DD" opacity={0.9} />
+                </g>
+              ))}
+            </g>
+          </motion.g>
+        </>
       )}
 
-      <path d="M44 198V50C44 30 52 16 60 8C68 16 76 30 76 50V198Q60 206 44 198Z" fill={url("t")} />
-      <rect x="40" y="0" width="40" height="210" clipPath={url("c")} filter={url("n")} opacity=".6" />
-      <rect x="44" y="74" width="32" height="12" fill="#000" opacity=".14" />
-      <path d="M48 74V86M52 74V86M56 74V86M60 74V86M64 74V86M68 74V86M72 74V86" stroke="#000" strokeOpacity=".18" strokeWidth=".5" />
-      <path d="M44 74H76M44 86H76" stroke="#3E1C08" strokeOpacity=".5" strokeWidth=".6" />
-      <path d="M60 8V2" stroke="#9CA1AB" strokeWidth="1" />
-      <ellipse cx="60" cy="140" rx="20" ry="74" fill="#000" opacity=".35" filter={url("b")} clipPath={url("c")} />
-      <path d="M36 66H44M36 188H44M76 66H84M76 188H84" stroke="#3E424A" strokeWidth="2" />
-      <path d="M29 38C32 42 35 50 35.5 58L36 64V196L38 208H20L22 196V64L22.5 58C23 50 26 42 29 38Z" fill={url("s")} />
-      <path d="M91 38C94 42 97 50 97.5 58L98 64V196L100 208H82L84 196V64L84.5 58C85 50 88 42 91 38Z" fill={url("s")} />
-      <path
-        d="M22 64H36M22 92H36M22 120H36M22 148H36M22 176H36M22 196H36M84 64H98M84 92H98M84 120H98M84 148H98M84 176H98M84 196H98"
-        stroke="#000" strokeOpacity=".2" strokeWidth=".7"
-      />
-      <path d="M23 208H35L36.5 216H21.5ZM85 208H97L98.5 216H83.5Z" fill={url("e")} />
-      <path d="M51 138L17 198L18 206H102L103 198L69 138Z" fill={url("w")} />
-      <path d="M22 199H98M60 199V206" stroke="#000" strokeOpacity=".18" strokeWidth=".6" />
-      <path d="M51 138L17 198M69 138L103 198" stroke="#1A1B1F" strokeWidth="3.2" strokeLinecap="round" />
-      <path d="M50 208V98C50 82 54 71 60 64C66 71 70 82 70 98V208Z" fill={url("o")} stroke="#000" strokeOpacity=".25" strokeWidth=".5" />
-      <path d="M60 100V180M53 100V180M67 100V180" stroke="#000" strokeOpacity=".14" strokeWidth=".5" />
-      <path d="M53 100H67M53 140H67M53 180H67" stroke="#000" strokeOpacity=".1" strokeWidth=".5" />
-      <path d="M54.5 76C56 70 58 66.5 60 64C62 66.5 64 70 65.5 76C62 74.6 58 74.6 54.5 76Z" fill="#1A1B1F" />
-      <path d="M54.5 86L57.5 83.5H62.5L65.5 86L64.8 89.5H55.2Z" fill="#14161A" />
-      <path d="M57.5 83.5L58.5 89.5M60 83.5V89.5M62.5 83.5L61.5 89.5" stroke="#5C6068" strokeWidth=".4" />
-      <rect x="50.3" y="112" width="19.4" height="2" fill={accent} />
-      <path
-        d="M50.5 186C50.5 182 52 180 54 180C56 180 57 182 57 186V206H50.5ZM63 186C63 182 64 180 66 180C68 180 69.5 182 69.5 186V206H63Z"
-        fill={url("o")} stroke="#000" strokeOpacity=".2" strokeWidth=".4"
-      />
-      <path d="M60 176V208" stroke="#8A8F99" strokeWidth="2.2" />
-      <path d="M59.4 176V208" stroke="#FFFFFF" strokeOpacity=".6" strokeWidth=".6" />
-      <rect x="53" y="208" width="14" height="3" fill="#2A2C31" />
-      <path d="M51 208H57L58 216H50ZM57 208H63L64 216H56ZM63 208H69L70 216H62Z" fill={url("e")} />
+      {design.body(url("sh"), accent)}
     </svg>
   );
 }

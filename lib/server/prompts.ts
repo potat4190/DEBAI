@@ -2,6 +2,7 @@ import "server-only";
 import { Type, type Schema } from "@google/genai";
 import {
   allowedEmotions,
+  CRITERION_MAX,
   MAX_SCORE,
   otherSide,
   sideLabel,
@@ -163,12 +164,12 @@ export const JUDGE_SYSTEM = [
   "A short, plain point backed by a real fact or a clear reason scores as high as a long, polished one.",
   "Judge each debater by the quality of their best points, not by how many they made.",
   "",
-  "Score each debater on four criteria, 0 to 5 each:",
+  "Score each debater on four criteria, 0 to 4 each (0 = missing, 1 = weak, 2 = adequate, 3 = strong, 4 = excellent):",
   "- claim: Is the point clear and on topic?",
   "- evidence: Is it backed by facts, examples or sound reasoning? Unsupported assertions and vague appeals score low.",
   "- rebuttal: Does it directly answer the point listed under 'Answering'? Judge how well it defeats that point.",
   "- relevance: Does it bear on the motion rather than a side issue?",
-  "If a debater's 'Answering' is 'nothing', give them rebuttal 3 and do not mention rebuttal for them.",
+  "If a debater's 'Answering' is 'nothing', give them rebuttal 2 and do not mention rebuttal for them.",
   "Use the same standard for both debaters. Before you answer, check: would the scores flip if the two debaters swapped places? If not, fix them.",
   "",
   "Flag an obvious logical fallacy (straw man, ad hominem, false dilemma, slippery slope, etc.) by name in 'fallacy'; use an empty string if none. Clumsy wording is never a fallacy.",
@@ -205,10 +206,10 @@ export function judgePrompt(motion: string, speaker1: JudgeEntry, speaker2: Judg
 const turnScoreSchema: Schema = {
   type: Type.OBJECT,
   properties: {
-    claim: { type: Type.INTEGER },
-    evidence: { type: Type.INTEGER },
-    rebuttal: { type: Type.INTEGER },
-    relevance: { type: Type.INTEGER },
+    claim: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
+    evidence: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
+    rebuttal: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
+    relevance: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
     reason: { type: Type.STRING },
     fallacy: { type: Type.STRING },
   },
@@ -263,7 +264,7 @@ export const REPORT_SYSTEM = [
   "- rewrite: pick one of their weaker arguments; 'original' quotes it (trim to about 40 words), 'improved' rebuilds it to be stronger in the weakest category.",
   "- fallacies: logical fallacies the student committed, each with name, exchange number and a short quote. Empty array if none.",
   "- exercise: one 60-second practice drill targeting the weakest category, e.g. \"Back this claim with two pieces of evidence in 60 seconds: ...\".",
-  "Categories: claim, evidence, rebuttal and relevance judge the points made. confidence is measured from the student's voice: long pauses, filler words and stutters (typed turns get a neutral 3). If confidence is weakest, coach delivery: slowing down, pausing silently instead of saying 'um', and preparing a first sentence.",
+  "Categories: claim, evidence, rebuttal and relevance judge the points made. confidence is measured from the student's voice: long pauses, filler words and stutters (typed turns get a neutral 2). Each category is scored 0 to 4.. If confidence is weakest, coach delivery: slowing down, pausing silently instead of saying 'um', and preparing a first sentence.",
 ].join("\n");
 
 export function reportPrompt(
@@ -275,7 +276,7 @@ export function reportPrompt(
   const lines = [
     `MOTION: "${config.motion}"`,
     `STUDENT SIDE: ${sideLabel(config.side)}`,
-    `WEAKEST CATEGORY: ${weakest} (average ${weakestAvg.toFixed(1)} / 5)`,
+    `WEAKEST CATEGORY: ${weakest} (average ${weakestAvg.toFixed(1)} / ${CRITERION_MAX})`,
     "",
     "TRANSCRIPT:",
   ];

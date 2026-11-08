@@ -3,6 +3,7 @@ import "server-only";
 // The judge here is a crude keyword heuristic, not a real evaluation.
 
 import {
+  CRITERION_MAX,
   otherSide,
   sideLabel,
   VOICE_PROFILES,
@@ -53,12 +54,12 @@ function heuristic(text: string, motion: string, hasContext: boolean): RawTurnSc
   const motionWords = motion.toLowerCase().split(/\W+/).filter((w) => w.length > 4);
   const overlap = motionWords.filter((w) => t.includes(w)).length;
 
-  const claim = Math.min(5, (words > 10 ? 2 : words > 0 ? 1 : 0) + (words > 35 ? 1 : 0) + Math.min(2, count(/\b(because|therefore|so|which means)\b/g)));
-  const evidence = Math.min(5, count(/\b(for example|for instance|studies|study|research|data|evidence|percent|according)\b|%|\d/g));
+  const claim = Math.min(CRITERION_MAX, (words > 10 ? 2 : words > 0 ? 1 : 0) + (words > 35 ? 1 : 0) + Math.min(2, count(/\b(because|therefore|so|which means)\b/g)));
+  const evidence = Math.min(CRITERION_MAX, count(/\b(for example|for instance|studies|study|research|data|evidence|percent|according)\b|%|\d/g));
   const rebuttal = hasContext
-    ? Math.min(5, count(/\b(but|however|you said|my opponent|ignores|on the contrary|that assumes|doesn't)\b/g) * 2)
-    : 3;
-  const relevance = Math.min(5, words === 0 ? 0 : 2 + overlap);
+    ? Math.min(CRITERION_MAX, count(/\b(but|however|you said|my opponent|ignores|on the contrary|that assumes|doesn't)\b/g) * 2)
+    : 2;
+  const relevance = Math.min(CRITERION_MAX, words === 0 ? 0 : 1 + overlap);
   const reasons: Record<Exclude<RubricKey, "confidence">, string> = {
     claim: "Your main point was hard to pin down.",
     evidence: "You asserted without evidence.",
@@ -73,7 +74,7 @@ function heuristic(text: string, motion: string, hasContext: boolean): RawTurnSc
 export function mockJudge(motion: string, context: string | null, userText: string, aiText: string): RawJudge {
   const s1 = heuristic(userText, motion, Boolean(context));
   // Canned opponent: middling scores with a little noise.
-  const n = () => Math.max(1, Math.min(5, 3 + Math.round(Math.random() * 2 - 1)));
+  const n = () => Math.max(1, Math.min(CRITERION_MAX, 2 + Math.round(Math.random() * 2 - 1)));
   const s2: RawTurnScore = { claim: n(), evidence: n(), rebuttal: n(), relevance: n(), reason: "You stated a position but offered little support.", fallacy: "" };
   const t1 = s1.claim + s1.evidence + s1.rebuttal + s1.relevance;
   const t2 = s2.claim + s2.evidence + s2.rebuttal + s2.relevance;

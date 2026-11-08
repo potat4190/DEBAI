@@ -6,6 +6,7 @@ import {
   VOICE_PROFILES,
   getDestination,
   formatMiles,
+  vehiclesFor,
   type Difficulty,
   type DestinationId,
   type GameConfig,
@@ -50,6 +51,7 @@ export default function SetupScreen({
   useEffect(() => setHistory(loadHistory()), []);
 
   const dest = getDestination(destination);
+  const vehicles = vehiclesFor(dest.id);
   const listed = TOPICS.includes(motion) ? motion : "";
   const canStart = motion.trim().length > 0;
 
@@ -97,9 +99,9 @@ export default function SetupScreen({
       </TopBar>
 
       <div className="relative z-[1] mx-auto flex max-w-[1180px] flex-wrap items-stretch justify-between gap-8 px-4 pt-12 sm:px-6">
-        {/* Vehicle A: the AI */}
-        <VehicleCard eyebrow="VEHICLE A" name="AI" color="var(--color-ai)">
-          <Rocket idp="start-a" accent="#6FB6E8" />
+        {/* The AI's rocket for this destination */}
+        <VehicleCard eyebrow={vehicles.ai.tag} name="AI" color="var(--color-ai)">
+          <Rocket model={vehicles.ai.id} idp="start-a" accent="#6FB6E8" />
           <dl className="m-0 grid w-full grid-cols-2 gap-x-3 gap-y-2 font-mono text-[11px] tracking-[1px] [&_dd]:m-0 [&_dd]:text-right [&_dt]:text-muted">
             <dt>ROLE</dt><dd>OPPONENT</dd>
             <dt>MODEL</dt><dd>GEMINI</dd>
@@ -200,9 +202,9 @@ export default function SetupScreen({
           </div>
         </section>
 
-        {/* Vehicle B: the user */}
-        <VehicleCard eyebrow="VEHICLE B" name="YOU" color="var(--color-you)">
-          <Rocket idp="start-b" accent="#E8833A" />
+        {/* Your rocket for this destination */}
+        <VehicleCard eyebrow={vehicles.user.tag} name="YOU" color="var(--color-you)">
+          <Rocket model={vehicles.user.id} idp="start-b" accent="#E8833A" />
           <div className="flex w-full flex-col gap-2.5">
             <label htmlFor="name" className="font-mono text-[11px] tracking-[3px] text-muted">CALLSIGN</label>
             <input

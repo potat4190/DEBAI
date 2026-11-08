@@ -3,11 +3,14 @@ import {
   clampScore,
   confidenceScore,
   contentWordCount,
+  CRITERION_MAX,
   countFillersAndStutters,
   deliveryFromVoicedText,
   otherSide,
   sideLabel,
+  vehiclesFor,
   type Delivery,
+  type DestinationId,
   type JudgeResult,
   type Side,
   type TurnScore,
@@ -37,11 +40,13 @@ interface Body {
   userDelivery?: Delivery;
   /** The AI's reply as it was voiced, with fillers and [pause] cues. */
   aiVoiced?: string;
+  /** Picks the rocket names used in the verdict. */
+  destination?: DestinationId;
 }
 
 // On the opening exchange the user has nothing to rebut, so neither side is scored on rebuttal:
-// both get this fixed value. Otherwise the AI, which always answers the user, gets a free edge.
-const OPENING_REBUTTAL = 3;
+// both get this fixed (middle) value. Otherwise the AI, which always answers the user, gets a free edge.
+const OPENING_REBUTTAL = 2;
 
 /** One judge pass. Labels are anonymous; `userFirst` decides who is shown as Speaker 1. */
 interface Pass {
@@ -54,13 +59,16 @@ const aiScore = (p: Pass) => (p.userFirst ? p.raw.speaker2 : p.raw.speaker1);
 const sum = (r: RawTurnScore, opening: boolean) =>
   clampScore(r.claim) + clampScore(r.evidence) + (opening ? OPENING_REBUTTAL : clampScore(r.rebuttal)) + clampScore(r.relevance);
 
-/** Replaces the anonymous labels with the on-screen vehicle names (Vehicle A = AI, Vehicle B = you). */
-function relabel(s: string, userFirst: boolean): string {
-  const user = "Vehicle B";
-  const ai = "Vehicle A";
+interface Names {
+  user: string;
+  ai: string;
+}
+
+/** Replaces the anonymous labels with the on-screen rocket names. */
+function relabel(s: string, userFirst: boolean, { user, ai }: Names): string {
   return (s ?? "")
-    .replace(/\bspeakers\s*(1\s*and\s*2|2\s*and\s*1)\b/gi, "Both vehicles")
-    .replace(/\bboth\s+speakers\b/gi, "both vehicles")
+    .replace(/\bspeakers\s*(1\s*and\s*2|2\s*and\s*1)\b/gi, "Both rockets")
+    .replace(/\bboth\s+speakers\b/gi, "both rockets")
     .replace(/\bspeaker\s*1\b/gi, userFirst ? user : ai)
     .replace(/\bspeaker\s*2\b/gi, userFirst ? ai : user)
     .trim();
@@ -180,12 +188,14 @@ export async function POST(req: Request) {
   };
   const voice = passes.find((p) => passWinner(p) === winner) ?? passes[0];
 
+  const vehicles = vehiclesFor(body.destination ?? "moon");
+  const names: Names = { user: vehicles.user.name, ai: vehicles.ai.name };
   const result: JudgeResult = {
     user,
     ai,
     winner,
-    winningSummary: relabel(voice.raw.winningSummary, voice.userFirst),
-    verdict: `${relabel(voice.raw.verdict, voice.userFirst)} Confidence: Vehicle B ${user.rubric.confidence}/5, Vehicle A ${ai.rubric.confidence}/5.`,
+    winningSummary: relabel(voice.raw.winningSummary, voice.userFirst, names),
+    verdict: `${relabel(voice.raw.verdict, voice.userFirst, names)} Confidence: ${names.user} ${user.rubric.confidence}/${CRITERION_MAX}, ${names.ai} ${ai.rubric.confidence}/${CRITERION_MAX}.`,
   };
   return NextResponse.json(result);
 }

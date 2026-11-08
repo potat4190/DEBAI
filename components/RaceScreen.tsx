@@ -3,6 +3,7 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { AnimatePresence, animate, motion, useMotionValue, useTransform } from "motion/react";
 import {
   BARGE_IN_MS,
+  CRITERION_MAX,
   MAX_SCORE,
   STREAK_LENGTH,
   VOICE_PROFILES,
@@ -14,6 +15,7 @@ import {
   sideLabel,
   stripCues,
   countFillersAndStutters,
+  vehiclesFor,
   type CutoffReason,
   type Delivery,
   type Destination,
@@ -24,6 +26,7 @@ import {
   type Outcome,
   type RocketState,
   type TurnScore,
+  type Vehicle,
 } from "@/lib/game";
 import { postJson, streamOpponent } from "@/lib/client/api";
 import { createSpeechQueue, fetchClip, isMuted, setMuted, stopAudio } from "@/lib/client/audio";
@@ -34,19 +37,19 @@ import { useRecorder } from "@/lib/client/useRecorder";
 import { VoiceActivity } from "@/lib/client/voiceActivity";
 import type { Integrations, RaceSummary } from "./DebAI";
 import { Corners, Dot, Label, MicIcon, Spinner, TopBar, btnGhost, btnPrimarySm, chipBtn, cx } from "./ui";
-import { EarthHorizon, GridOverlay, PlanetOrb, Rocket } from "./visuals";
+import { EarthHorizon, GridOverlay, PlanetOrb, Rocket, SpeedField, type FlameState } from "./visuals";
 
 const PHASE_LABEL: Record<Phase, string> = {
   user: "YOUR TURN · SPEAK OR TYPE YOUR ARGUMENT",
-  opponent: "VEHICLE A IS TALKING…",
+  opponent: "{AI} IS TALKING…",
   waiting: "FINAL EXCHANGE · JUDGE SCORING",
   finishing: "COMPUTING FINAL TRAJECTORY…",
 };
 
 const CUTOFF_NOTICE: Record<CutoffReason, string> = {
-  silent: "VEHICLE A JUMPED IN · YOU DIDN'T START",
-  stall: "VEHICLE A CUT YOU OFF · TOO MUCH HESITATION",
-  ramble: "VEHICLE A CUT YOU OFF · YOUR TURN RAN LONG",
+  silent: "{AI} JUMPED IN · YOU DIDN'T START",
+  stall: "{AI} CUT YOU OFF · TOO MUCH HESITATION",
+  ramble: "{AI} CUT YOU OFF · YOUR TURN RAN LONG",
 };
 
 /** One previous exchange, as the opponent sees it. */
@@ -86,8 +89,8 @@ const TRANSCRIPT_TIMEOUT_MS = 12_000;
 /** Used if the judge fails twice in a row, so the race can carry on. */
 function fallbackJudge(): JudgeResult {
   const score: TurnScore = {
-    rubric: { claim: 2, evidence: 2, rebuttal: 3, relevance: 3, confidence: 3 },
-    total: 13,
+    rubric: { claim: 2, evidence: 2, rebuttal: 2, relevance: 2, confidence: 2 },
+    total: 10,
     reason: "The judge was unavailable, so this exchange was scored as a tie.",
     fallacy: null,
   };
@@ -104,6 +107,10 @@ const CLOUD_LAYERS = [
 ];
 const EASE_OUT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 const BOOST_SECONDS = 1.8;
+/** The rocket that gained more speed fires a burst for this long before it starts climbing. */
+const BLAST_SECONDS = 0.7;
+/** Track rockets are 48 px wide: name label (18 px) + nose to engine nozzles (86 px). */
+const ROCKET_ENGINE_OFFSET = 104;
 
 const TRACK_BG = "linear-gradient(to top, #0a1830 0%, #070e1f 26%, #04060e 62%, #030409 100%)";
 const CLOUD_BG =
@@ -124,6 +131,8 @@ export default function RaceScreen({
   onFinish: (summary: RaceSummary) => void;
 }) {
   const dest = getDestination(config.destination);
+  const vehicles = vehiclesFor(dest.id);
+  const withAi = (text: string) => text.replace("{AI}", vehicles.ai.tag);
   const profile = VOICE_PROFILES[config.difficulty];
   const [state, dispatch] = useReducer(raceReducer, dest, initialRaceState);
   const { user, ai, exchanges, pending, phase, draft, transmission, turnLeft, error, notice, boosting, stoppedAt } = state;
@@ -292,6 +301,7 @@ export default function RaceScreen({
       aiText: input.aiText,
       userDelivery: input.userDelivery,
       aiVoiced: input.aiVoiced,
+      destination: config.destination,
     };
     const judged = postJson<JudgeResult>("/api/judge", body)
       .catch(() => wait(1500).then(() => postJson<JudgeResult>("/api/judge", body)))
@@ -319,7 +329,7 @@ export default function RaceScreen({
         captions.stop();
         recorder.discard();
       }
-      await wait(2200);
+      await wait((BLAST_SECONDS + BOOST_SECONDS) * 1000 + 400);
       act({ type: "boostDone" });
       if (outcome.over) {
         const end = Date.now();
@@ -410,7 +420,7 @@ export default function RaceScreen({
       const mood = pickMood(before.exchanges, dest);
       act({ type: "draft", text: userText });
       act({ type: "submit", index, userText });
-      act({ type: "notice", text: cutoff ? CUTOFF_NOTICE[cutoff] : null });
+      act({ type: "notice", text: cutoff ? withAi(CUTOFF_NOTICE[cutoff]) : null });
       if (interjectionLine) act({ type: "sentence", sentence: interjectionLine });
 
       // The opponent's reply streams in; each sentence is shown and voiced as it arrives.
@@ -462,7 +472,7 @@ export default function RaceScreen({
         last,
         spoken: barged ? (interjectionLine ? [interjectionLine, ...heard] : heard) : undefined,
       });
-      if (barged) act({ type: "notice", text: "YOU CUT VEHICLE A OFF" });
+      if (barged) act({ type: "notice", text: `YOU CUT ${vehicles.ai.tag} OFF` });
 
       // The judge scores this exchange in the background while the conversation carries on.
       scoreInBackground({ index, userText, aiText, context, mood, userDelivery, aiVoiced: heard.map((s) => s.tagged).join(" ") });
@@ -489,7 +499,7 @@ export default function RaceScreen({
   const timerText = `${String(Math.floor(turnLeft / 60)).padStart(2, "0")}:${String(turnLeft % 60).padStart(2, "0")}`;
   const commsLabel =
     phase !== "user"
-      ? PHASE_LABEL[phase]
+      ? withAi(PHASE_LABEL[phase])
       : transcribing
         ? "TRANSCRIBING YOUR TURN…"
         : recording
@@ -525,18 +535,19 @@ export default function RaceScreen({
           <Label>MOTION</Label>
           <span className="flex-[1_1_300px] text-[17px] font-medium">{config.motion}</span>
           <Label className="tracking-[2px]">
-            B · {sideLabel(config.side)} · A · {sideLabel(otherSide(config.side))} · {config.difficulty.toUpperCase()}
+            {vehicles.user.tag} · {sideLabel(config.side)} · {vehicles.ai.tag} · {sideLabel(otherSide(config.side))} ·{" "}
+            {config.difficulty.toUpperCase()}
           </Label>
         </div>
 
         <div className="flex flex-wrap items-stretch gap-3.5">
           <div className="flex min-w-0 flex-[999_1_600px] flex-col gap-2.5">
             <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-2.5 font-mono">
-              <Telemetry label="VEHICLE A · AI" color="var(--color-ai)" r={ai} dest={dest} corner="tl" boosting={boosting} />
-              <Telemetry label={`VEHICLE B · ${config.callsign.toUpperCase()}`} color="var(--color-you)" r={user} dest={dest} corner="tr" boosting={boosting} />
+              <Telemetry label={`${vehicles.ai.tag} · AI`} color="var(--color-ai)" r={ai} dest={dest} corner="tl" boosting={boosting} />
+              <Telemetry label={`${vehicles.user.tag} · ${config.callsign.toUpperCase()}`} color="var(--color-you)" r={user} dest={dest} corner="tr" boosting={boosting} />
             </div>
 
-            <RaceTrack dest={dest} user={user} ai={ai} boosting={boosting} />
+            <RaceTrack dest={dest} vehicles={vehicles} user={user} ai={ai} boosting={boosting} />
 
             <section className="relative flex flex-col gap-3 border border-line bg-white/[0.02] px-4 py-3.5">
               <Corners color="var(--color-ink)" both={false} size={12} />
@@ -547,12 +558,12 @@ export default function RaceScreen({
 
               {notice && <p className="m-0 font-mono text-[11px] tracking-[2px] text-warn">{notice}</p>}
 
-              {interruptions && phase === "user" && recording && <PatienceBar patience={patience} />}
+              {interruptions && phase === "user" && recording && <PatienceBar patience={patience} name={vehicles.ai.tag} />}
 
               {transmission.length > 0 && (
                 <div className="flex flex-col gap-1.5 border-l-2 border-ai bg-ai/5 px-3 py-2.5">
                   <Label className="text-[11px] tracking-[2px]" color="var(--color-ai)">
-                    VEHICLE A · {phase === "opponent" ? "INCOMING TRANSMISSION" : "LAST TRANSMISSION"}
+                    {vehicles.ai.tag} · {phase === "opponent" ? "INCOMING TRANSMISSION" : "LAST TRANSMISSION"}
                   </Label>
                   <p className="m-0 text-[15px] leading-[1.55] text-body">
                     {transmission.map((s, i) => (
@@ -630,7 +641,7 @@ export default function RaceScreen({
               )}
               <AnimatePresence initial={false}>
                 {exchanges.map((e) => (
-                  <TimelineEntry key={e.index} e={e} />
+                  <TimelineEntry key={e.index} e={e} vehicles={vehicles} />
                 ))}
                 {pending.map((p) => (
                   <motion.article
@@ -644,7 +655,7 @@ export default function RaceScreen({
                       <span>EXCHANGE {String(p.index).padStart(2, "0")}</span>
                       <span>PENDING</span>
                     </div>
-                    <span className="text-muted">{p.aiText ? "Judge scoring…" : "Vehicle A replying…"}</span>
+                    <span className="text-muted">{p.aiText ? "Judge scoring…" : `${vehicles.ai.name} replying…`}</span>
                   </motion.article>
                 ))}
               </AnimatePresence>
@@ -665,22 +676,37 @@ export default function RaceScreen({
 // ---------- Pieces ----------
 
 /** How long the AI will wait before cutting in: drains as you hesitate or run long. */
-function PatienceBar({ patience }: { patience: number }) {
+function PatienceBar({ patience, name }: { patience: number; name: string }) {
   const left = 1 - patience;
   const color = left < 0.35 ? "var(--color-bad)" : left < 0.65 ? "var(--color-warn)" : "var(--color-ai)";
   return (
     <div className="flex items-center gap-3 font-mono text-[10px] tracking-[2px] text-muted">
-      <span>VEHICLE A PATIENCE</span>
-      <span className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/10" role="meter" aria-label="Vehicle A patience" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(left * 100)}>
+      <span>{name} PATIENCE</span>
+      <span className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/10" role="meter" aria-label={`${name} patience`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(left * 100)}>
         <span className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-200" style={{ width: `${left * 100}%`, background: color }} />
       </span>
     </div>
   );
 }
 
-function RaceTrack({ dest, user, ai, boosting }: { dest: Destination; user: RocketState; ai: RocketState; boosting: boolean }) {
+function RaceTrack({
+  dest,
+  vehicles,
+  user,
+  ai,
+  boosting,
+}: {
+  dest: Destination;
+  vehicles: { user: Vehicle; ai: Vehicle };
+  user: RocketState;
+  ai: RocketState;
+  boosting: boolean;
+}) {
+  // Whoever gained more speed this exchange gets the boost burst (both, on a tie).
+  const boosted = (me: RocketState, them: RocketState) => boosting && (me.lastDv ?? 0) >= (them.lastDv ?? 0);
   return (
     <div className="relative h-[540px] overflow-hidden border border-white/12" style={{ background: TRACK_BG }}>
+      <SpeedField boosting={boosting} />
       <GridOverlay />
       <PlanetOrb id={dest.id} size={300} style={{ position: "absolute", left: "50%", top: -170, marginLeft: -150 }} />
 
@@ -713,8 +739,8 @@ function RaceTrack({ dest, user, ai, boosting }: { dest: Destination; user: Rock
 
       <EarthHorizon height={130} label={false} />
 
-      <TrackRocket side="left" pct={Math.min(1, ai.d / dest.distance)} color="#6FB6E8" letter="A" idp="race-a" flame={boosting} stalled={ai.stalled} />
-      <TrackRocket side="right" pct={Math.min(1, user.d / dest.distance)} color="#E8833A" letter="B" idp="race-b" flame={boosting} stalled={user.stalled} />
+      <TrackRocket side="left" pct={Math.min(1, ai.d / dest.distance)} color="#6FB6E8" vehicle={vehicles.ai} idp="race-a" blast={boosted(ai, user)} stalled={ai.stalled} />
+      <TrackRocket side="right" pct={Math.min(1, user.d / dest.distance)} color="#E8833A" vehicle={vehicles.user} idp="race-b" blast={boosted(user, ai)} stalled={user.stalled} />
 
       <span className="absolute bottom-3 right-3.5 z-[1] font-mono text-[9px] tracking-[2px] text-muted">TRAJECTORY VIEW · NOT TO SCALE</span>
     </div>
@@ -725,30 +751,40 @@ function TrackRocket({
   side,
   pct,
   color,
-  letter,
+  vehicle,
   idp,
-  flame,
+  blast,
   stalled,
 }: {
   side: "left" | "right";
   pct: number;
   color: string;
-  letter: string;
+  vehicle: Vehicle;
   idp: string;
-  flame: boolean;
+  blast: boolean;
   stalled: boolean;
 }) {
-  const top = TRACK_ZERO_Y - pct * (TRACK_ZERO_Y - TRACK_TARGET_Y);
+  // The rocket's engines sit on its progress line, so the flame stays in view from the start.
+  const top = TRACK_ZERO_Y - pct * (TRACK_ZERO_Y - TRACK_TARGET_Y) - ROCKET_ENGINE_OFFSET;
+  // The engines always burn a little; a boost flares them up, a fallacy makes them sputter.
+  const flame: FlameState = blast ? "blast" : stalled ? "stall" : "idle";
   return (
     <motion.div
       className="absolute z-[2] flex -translate-x-1/2 flex-col items-center gap-1"
       style={{ left: side === "left" ? "33%" : "67%" }}
       initial={false}
       animate={{ top }}
-      transition={{ duration: BOOST_SECONDS, ease: EASE_OUT }}
+      // The boosted rocket fires its burst first, then climbs.
+      transition={{ duration: BOOST_SECONDS, ease: EASE_OUT, delay: blast ? BLAST_SECONDS : 0 }}
     >
-      <Rocket idp={idp} accent={color} width={48} flame={flame} stalled={stalled} />
-      <span className="font-mono text-[10px] tracking-[2px]" style={{ color }}>{letter}</span>
+      <span className="whitespace-nowrap font-mono text-[10px] tracking-[2px]" style={{ color }}>{vehicle.tag}</span>
+      <motion.div
+        initial={false}
+        animate={blast ? { x: [0, -1.5, 1.5, -1.2, 1.2, -0.6, 0] } : { x: 0 }}
+        transition={{ duration: BLAST_SECONDS, ease: "linear" }}
+      >
+        <Rocket model={vehicle.id} idp={idp} accent={color} width={48} flame={flame} />
+      </motion.div>
     </motion.div>
   );
 }
@@ -839,9 +875,9 @@ function Stat({ label, unit, children }: { label: string; unit: string; children
   );
 }
 
-function TimelineEntry({ e }: { e: Exchange }) {
+function TimelineEntry({ e, vehicles }: { e: Exchange; vehicles: { user: Vehicle; ai: Vehicle } }) {
   const { judge } = e;
-  const winnerTag = judge.winner === "user" ? "B" : judge.winner === "ai" ? "A" : "TIE";
+  const winnerTag = judge.winner === "user" ? vehicles.user.tag : judge.winner === "ai" ? vehicles.ai.tag : "TIE";
   return (
     <motion.article
       layout
@@ -855,8 +891,8 @@ function TimelineEntry({ e }: { e: Exchange }) {
         <span>T+{formatClock(e.at)}</span>
       </div>
       <div className="grid grid-cols-2 gap-px bg-line">
-        <ScoreCell label="A · SCORE" color="var(--color-ai)" score={judge.ai.total} dv={e.aiDv} reason={judge.ai.reason} fallacy={judge.ai.fallacy} confidence={judge.ai.rubric.confidence} delivery={judge.ai.delivery} />
-        <ScoreCell label="B · SCORE" color="var(--color-you)" score={judge.user.total} dv={e.userDv} reason={judge.user.reason} fallacy={judge.user.fallacy} confidence={judge.user.rubric.confidence} delivery={judge.user.delivery} />
+        <ScoreCell label={`${vehicles.ai.tag} · SCORE`} color="var(--color-ai)" score={judge.ai.total} dv={e.aiDv} reason={judge.ai.reason} fallacy={judge.ai.fallacy} confidence={judge.ai.rubric.confidence} delivery={judge.ai.delivery} />
+        <ScoreCell label={`${vehicles.user.tag} · SCORE`} color="var(--color-you)" score={judge.user.total} dv={e.userDv} reason={judge.user.reason} fallacy={judge.user.fallacy} confidence={judge.user.rubric.confidence} delivery={judge.user.delivery} />
       </div>
       {judge.winningSummary && <TimelineBlock label={`WINNING ARGUMENT · ${winnerTag}`} text={judge.winningSummary} />}
       <TimelineBlock label="JUDGE" text={judge.verdict} />
@@ -900,7 +936,7 @@ function ScoreCell({
       <span className="text-[10px] text-muted">ΔV +{Math.round(dv).toLocaleString("en-US")} MI/S</span>
       {confidence !== undefined && (
         <span className="text-[9px] tracking-[1px] text-muted">
-          CONFIDENCE {confidence}/5{delivery ? ` · ${delivery.toUpperCase()}` : ""}
+          CONFIDENCE {confidence}/{CRITERION_MAX}{delivery ? ` · ${delivery.toUpperCase()}` : ""}
         </span>
       )}
       {fallacy && <span className="text-[9px] tracking-[1px] text-bad">STALL · {fallacy.toUpperCase()}</span>}
