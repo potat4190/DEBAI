@@ -68,14 +68,34 @@ function heuristic(text: string, motion: string, hasContext: boolean): RawTurnSc
   };
   const scores: Record<Exclude<RubricKey, "confidence">, number> = { claim, evidence, rebuttal, relevance };
   const weakest = (Object.keys(scores) as (keyof typeof scores)[]).reduce((a, b) => (scores[b] < scores[a] ? b : a));
-  return { ...scores, reason: words === 0 ? "You didn't make an argument this turn." : reasons[weakest], fallacy: "" };
+  const band = (n: number, low: string, mid: string, high: string) => (n >= 3 ? high : n >= 2 ? mid : low);
+  const notes = {
+    claim: words === 0 ? "No argument given." : band(claim, "Position is hard to pin down.", "Position stated with some reasoning.", "Clear position with a stated reason."),
+    evidence: band(evidence, "No facts, examples or data.", "Some support, but thin.", "Backed by examples or data."),
+    rebuttal: hasContext ? band(rebuttal, "Doesn't engage the other side's point.", "Pushes back, but only partly.", "Answers the other side directly.") : "Opening statement: nothing to answer yet.",
+    relevance: band(relevance, "Drifts away from the motion.", "Loosely tied to the motion.", "Stays on the motion."),
+  };
+  return { ...scores, notes, reason: words === 0 ? "You didn't make an argument this turn." : reasons[weakest], fallacy: "" };
 }
 
 export function mockJudge(motion: string, context: string | null, userText: string, aiText: string): RawJudge {
   const s1 = heuristic(userText, motion, Boolean(context));
   // Canned opponent: middling scores with a little noise.
   const n = () => Math.max(1, Math.min(CRITERION_MAX, 2 + Math.round(Math.random() * 2 - 1)));
-  const s2: RawTurnScore = { claim: n(), evidence: n(), rebuttal: n(), relevance: n(), reason: "You stated a position but offered little support.", fallacy: "" };
+  const s2: RawTurnScore = {
+    claim: n(),
+    evidence: n(),
+    rebuttal: n(),
+    relevance: n(),
+    notes: {
+      claim: "Position stated in general terms.",
+      evidence: "Appeals to history without specifics.",
+      rebuttal: context ? "Pushes back without a concrete reason." : "Opening statement: nothing to answer yet.",
+      relevance: "Tied to the motion's practical costs.",
+    },
+    reason: "You stated a position but offered little support.",
+    fallacy: "",
+  };
   const t1 = s1.claim + s1.evidence + s1.rebuttal + s1.relevance;
   const t2 = s2.claim + s2.evidence + s2.rebuttal + s2.relevance;
   void aiText;

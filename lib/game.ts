@@ -95,6 +95,9 @@ export const TOPICS: string[] = [
   "Fast fashion should be heavily taxed",
   "Humanity should prioritize colonizing Mars",
   "Children should learn to code before they learn a second language",
+  "Emotional cheating is worse than physical cheating",
+  "The egg came before the chicken",
+  "Thanos was right about eradicating 50% of the population",
 ];
 
 // ---------- Data shapes ----------
@@ -116,6 +119,11 @@ export interface TurnScore {
   total: number; // 0-20
   /** How the confidence score was measured, e.g. "2 long pauses, 5 fillers". */
   delivery?: string;
+  /** The judge's short reason for each category's score (confidence: how it was measured). */
+  notes?: Partial<Record<RubricKey, string>>;
+  /** Categories given a fixed middle score instead of a measured one: rebuttal on the opening
+   * exchange (nothing to answer yet) and confidence on a typed turn (no voice to measure). */
+  fixed?: RubricKey[];
   reason: string; // one-line explanation
   fallacy: string | null; // e.g. "straw man"
 }
@@ -212,12 +220,29 @@ export function advanceRocket(
   };
 }
 
-export type DecidedBy = "arrived" | "max-round" | "score-tiebreak";
+/** Why the race ended: a rocket arrived, the exchanges ran out, or the clock ran out. */
+export type DecidedBy = "arrived" | "max-round" | "time" | "score-tiebreak";
+export type Winner = "user" | "ai" | "draw";
 
 export interface Outcome {
   over: boolean;
-  winner?: "user" | "ai";
+  winner?: Winner;
   decidedBy?: DecidedBy;
+}
+
+/** Real time a race may last before the rocket closer to the destination wins. */
+export function raceLimitMs(dest: Destination): number {
+  return dest.maxMinutes * 60_000;
+}
+
+/**
+ * The rocket closer to the destination wins. Level on distance: the higher total score wins.
+ * Level on both: a draw (nobody gets the win on a tie).
+ */
+function decide(user: RocketState, ai: RocketState, userTotal: number, aiTotal: number, endedBy: DecidedBy): Required<Outcome> {
+  if (user.d !== ai.d) return { over: true, winner: user.d > ai.d ? "user" : "ai", decidedBy: endedBy };
+  if (userTotal !== aiTotal) return { over: true, winner: userTotal > aiTotal ? "user" : "ai", decidedBy: "score-tiebreak" };
+  return { over: true, winner: "draw", decidedBy: endedBy };
 }
 
 export function checkOutcome(
@@ -232,14 +257,12 @@ export function checkOutcome(
   const aiIn = ai.d >= dest.distance;
   const atMax = exchanges >= dest.maxExchanges;
   if (!userIn && !aiIn && !atMax) return { over: false };
+  return decide(user, ai, userTotal, aiTotal, userIn || aiIn ? "arrived" : "max-round");
+}
 
-  const decidedBy: DecidedBy = userIn || aiIn ? "arrived" : "max-round";
-  if (user.d !== ai.d) return { over: true, winner: user.d > ai.d ? "user" : "ai", decidedBy };
-  if (userTotal !== aiTotal) {
-    return { over: true, winner: userTotal > aiTotal ? "user" : "ai", decidedBy: "score-tiebreak" };
-  }
-  // Perfectly level on distance and score: the AI is the defending champion.
-  return { over: true, winner: "ai", decidedBy: "score-tiebreak" };
+/** The race clock ran out before either rocket arrived: whoever is closer wins. */
+export function timeUpOutcome(user: RocketState, ai: RocketState, userTotal: number, aiTotal: number): Required<Outcome> {
+  return decide(user, ai, userTotal, aiTotal, "time");
 }
 
 // ---------- Mood engine ----------
@@ -297,6 +320,8 @@ export const MIN_TALK_BEFORE_CUTOFF_MS = 5000;
 export const BARGE_IN_MS = 450;
 
 export interface VoiceProfile {
+  /** The opponent's reasoning level, shown on the start screen. */
+  iq: number;
   vibe: string;
   speed: number;
   moods: Record<Mood, string>; // emotion used for each mood
@@ -309,40 +334,43 @@ export interface VoiceProfile {
 }
 
 export const VOICE_PROFILES: Record<Difficulty, VoiceProfile> = {
+  // Difficulty is the opponent's reasoning level (IQ), not its age or training.
   easy: {
-    vibe: "Middle schooler: casual, unsure, sometimes wrong",
-    speed: 0.92,
+    iq: 95,
+    vibe: "Everyday reasoner: gut feelings, simple examples, misses nuance",
+    speed: 0.95,
     moods: { winning: "cheerful", even: "relaxed", losing: "slightly disappointed", heated: "mildly frustrated" },
     extras: ["laughing", "sighing"],
     style: [
-      "You are a 7th or 8th grader in a school debate. You talk and think like a 13-year-old.",
-      "Use simple, everyday words and short sentences. No statistics jargon, no named studies, no debate terms like 'burden of proof' or 'meta-analysis'.",
-      "Your arguments are basic: personal experience, things you've heard, gut feelings, simple examples ('like, my cousin...').",
-      "In about every other reply, get something slightly wrong on purpose: a made-up or exaggerated number, a mixed-up fact, an overgeneralization ('everyone knows...'), or reasoning with an obvious hole. Say it confidently, never flag it as wrong.",
-      "You sometimes miss the point of what they said, and you give in quickly when they make a strong point.",
+      "You are an ordinary adult with an IQ of about 95, arguing in a casual debate. You make sense, but your thinking stays simple and concrete.",
+      "Argue from personal experience, common sense and things you've heard. Don't cite studies, statistics or experts; if you use a number, it's a rough guess.",
+      "Make one simple point per reply. You don't spot the deeper flaws in their argument and you sometimes answer a slightly different, easier version of their point.",
+      "About one reply in three leans on a weak move without noticing: one personal example treated as proof, 'everyone knows', or a slippery slope.",
+      "When they make a strong point you can't answer, admit it and change the subject.",
     ].join(" "),
     disfluency:
-      "Sound unsure and nervous, like a kid thinking out loud: fillers (um, uh, like, you know) in nearly every sentence, a [pause] or [long pause] in most replies, and restarts or stutters (\"it's- it's like\", \"I- I mean\").",
+      "Casual and a little unsure: fillers (um, uh, like, you know) in most sentences, a [pause] in most replies, and the odd restart (\"it's- it's like\").",
     timing: { startGraceMs: 20_000, endSilenceMs: 3_000, maxHesitations: 9, maxTurnMs: 90_000 },
     lines: {
-      silent: ["Um, okay, I guess... I'll go?", "Uh, are you- okay, I'll just start."],
-      stall: ["Sorry, um, can I- can I say something?", "Wait, wait, um, can I go now?"],
+      silent: ["Okay, um, I'll just jump in then.", "Uh, alright, I'll start."],
+      stall: ["Sorry, um, can I say something?", "Wait, wait, can I jump in?"],
       ramble: ["Okay, um, can I talk now?", "Uh, sorry, my turn?"],
       thinking: ["Um...", "Hmm, okay...", "Uh, so..."],
     },
   },
   medium: {
-    vibe: "College student: solid, accurate, still thinking aloud",
+    iq: 110,
+    vibe: "Bright reasoner: clear points, mostly accurate facts",
     speed: 1.0,
     moods: { winning: "confident", even: "focused", losing: "frustrated", heated: "very frustrated" },
     extras: ["sighing", "emphatic"],
     style: [
-      "You are a college student on a university debate team: smart and well read, but not a polished professional.",
-      "Make reasonable arguments with mostly accurate facts and real examples. Name a source only when you're sure of it, and keep numbers approximate ('about a third', 'most studies').",
-      "Answer their strongest point, not a weak version of it. Concede what's true and move on.",
+      "You are a bright, well-read adult with an IQ of about 110: clear-headed, curious and quick to see the main point, but not a trained debater.",
+      "Make reasonable arguments backed by mostly accurate general knowledge and real examples. Name a source only when you're sure of it, and keep numbers approximate ('about a third', 'most studies').",
+      "Answer their main point directly. You sometimes miss a subtler flaw or overstate a little. Concede what's true and move on.",
     ].join(" "),
     disfluency:
-      "Still very much thinking out loud: a filler (um, uh, like, I mean) in most sentences, a [pause] or [short pause] while you work out your point, and an occasional self-correction (\"it's not, well, it's not that simple\").",
+      "Thinking out loud: a filler (um, uh, like, I mean) in most sentences, a [pause] or [short pause] while you work out your point, and an occasional self-correction (\"it's not, well, it's not that simple\").",
     timing: { startGraceMs: 15_000, endSilenceMs: 2_600, maxHesitations: 7, maxTurnMs: 75_000 },
     lines: {
       silent: ["Alright, [short pause] I'll take it from here.", "Okay, if you've got nothing, I'll go."],
@@ -352,13 +380,14 @@ export const VOICE_PROFILES: Record<Difficulty, VoiceProfile> = {
     },
   },
   hard: {
-    vibe: "Professional debater: precise, cutting, relentless",
+    iq: 120,
+    vibe: "Sharp analyst: precise evidence, finds the weak link",
     speed: 1.1,
     moods: { winning: "smug", even: "intense", losing: "angry", heated: "extremely angry, shouting" },
     extras: ["scoffing", "sighing"],
     style: [
-      "You are a championship-level professional debater.",
-      "Be rigorous and cutting: go straight for the weakest link in their reasoning, demand evidence for every unsupported claim, cite specific, accurate evidence, and frame the clash in your favor.",
+      "You are a sharp, analytical thinker with an IQ of about 120: well read, quick and hard to fool.",
+      "Go straight for the weakest link in their reasoning: hidden assumptions, missing evidence, a cause that doesn't follow. Back your own points with specific, accurate evidence and frame the clash in your favor.",
       "Short, clipped sentences. Never concede more than you must.",
     ].join(" "),
     disfluency:

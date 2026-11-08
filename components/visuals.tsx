@@ -2,6 +2,7 @@
 import { useRef, type CSSProperties, type ReactNode } from "react";
 import { motion, useAnimationFrame, useMotionValue, useReducedMotion, useTransform } from "motion/react";
 import type { DestinationId, RocketId } from "@/lib/game";
+import { cn } from "@/lib/utils";
 
 // ---------- Planet surfaces (from the design) ----------
 
@@ -104,7 +105,7 @@ export function EarthHorizon({ height = 200, label = true }: { height?: number; 
           <ellipse cx="830" cy="150" rx="230" ry="10" />
         </g>
       </svg>
-      {label && <span className="absolute bottom-5 left-6 font-mono text-[10px] tracking-[2px] text-muted">EARTH · LOW ORBIT VIEW</span>}
+      {label && <span className="absolute bottom-5 left-6 font-mono text-[10px] tracking-[2px] text-muted-foreground">EARTH · LOW ORBIT VIEW</span>}
     </div>
   );
 }
@@ -470,14 +471,46 @@ const DESIGNS: Record<RocketId, Design> = {
   },
 };
 
-/** off = on the pad, idle = cruising burn, blast = speed boost, stall = sputtering after a fallacy. */
-export type FlameState = "off" | "idle" | "blast" | "stall";
+/** off = on the pad, idle = cruising, burn = climbing, blast = speed boost, stall = sputtering after a fallacy. */
+export type FlameState = "off" | "idle" | "burn" | "blast" | "stall";
 
-const FLAME_SHAPE: Record<Exclude<FlameState, "off">, { scaleX: number; scaleY: number; opacity: number }> = {
-  idle: { scaleX: 0.9, scaleY: 0.6, opacity: 0.9 },
-  blast: { scaleX: 1.45, scaleY: 3, opacity: 1 },
-  stall: { scaleX: 0.8, scaleY: 0.45, opacity: 0.5 },
+type Lit = Exclude<FlameState, "off">;
+
+const FLAME_SHAPE: Record<Lit, { scaleX: number; scaleY: number; opacity: number }> = {
+  idle: { scaleX: 1, scaleY: 1, opacity: 0.95 },
+  burn: { scaleX: 1.12, scaleY: 1.75, opacity: 1 },
+  blast: { scaleX: 1.5, scaleY: 3.2, opacity: 1 },
+  stall: { scaleX: 0.85, scaleY: 0.5, opacity: 0.55 },
 };
+
+const GLOW: Record<Lit, { opacity: number; scale: number }> = {
+  idle: { opacity: 0.5, scale: 1 },
+  burn: { opacity: 0.75, scale: 1.3 },
+  blast: { opacity: 1, scale: 1.9 },
+  stall: { opacity: 0.12, scale: 0.8 },
+};
+
+/** Embers drifting off the nozzles: [drift x, fall y, seconds, delay]. Faster and wider under thrust. */
+const EMBERS: [number, number, number, number][] = [
+  [-7, 46, 1.15, 0],
+  [6, 52, 0.95, -0.35],
+  [-3, 62, 1.3, -0.7],
+  [9, 40, 1.05, -0.2],
+  [-10, 56, 1.25, -0.9],
+  [4, 66, 1.4, -0.55],
+];
+const EMBER_PACE: Record<Lit, { time: number; spread: number }> = {
+  idle: { time: 1, spread: 1 },
+  burn: { time: 0.7, spread: 1.3 },
+  blast: { time: 0.42, spread: 1.9 },
+  stall: { time: 1, spread: 1 },
+};
+
+/** A teardrop flame hanging from a nozzle of width w. */
+function plume(x: number, w: number, len: number): string {
+  const y = NOZZLE_Y;
+  return `M${x - w / 2} ${y}C${x - w / 2} ${y + len * 0.35} ${x - w * 0.12} ${y + len * 0.8} ${x} ${y + len}C${x + w * 0.12} ${y + len * 0.8} ${x + w / 2} ${y + len * 0.35} ${x + w / 2} ${y}Z`;
+}
 
 export function Rocket({
   model,
@@ -495,6 +528,7 @@ export function Rocket({
   const id = (s: string) => `${idp}-${s}`;
   const url = (s: string) => `url(#${id(s)})`;
   const design = DESIGNS[model];
+  const hot = flame === "blast" || flame === "burn";
   return (
     <svg width={width} height={(width * 260) / 120} viewBox="0 0 120 260" fill="none" overflow="visible" aria-hidden="true">
       <defs>
@@ -508,43 +542,69 @@ export function Rocket({
         </linearGradient>
         <linearGradient id={id("f")} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stopColor="#FFF4D6" />
-          <stop offset=".25" stopColor="#FFC56B" />
-          <stop offset=".6" stopColor="#F2742B" stopOpacity=".8" />
-          <stop offset="1" stopColor="#F2742B" stopOpacity="0" />
+          <stop offset=".22" stopColor="#FFC56B" />
+          <stop offset=".58" stopColor="#F2742B" stopOpacity=".85" />
+          <stop offset="1" stopColor="#E0461F" stopOpacity="0" />
         </linearGradient>
-        <filter id={id("b")} x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="6" />
+        <filter id={id("b")} x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="7" />
         </filter>
       </defs>
 
       {flame !== "off" && (
         <>
-          <motion.ellipse
-            cx={60}
-            cy={NOZZLE_Y + 16}
-            rx={34}
-            ry={18}
-            fill="#FFB45A"
-            filter={url("b")}
+          {/* Heat glow under the engines: breathes while idling, blooms on a boost. */}
+          <motion.g
+            style={{ originX: 0.5, originY: 0.3 }}
             initial={false}
-            animate={{ opacity: flame === "blast" ? 0.75 : flame === "idle" ? 0.14 : 0 }}
-            transition={{ duration: 0.3 }}
-          />
+            animate={GLOW[flame]}
+            transition={flame === "blast" ? { type: "spring", stiffness: 180, damping: 14 } : { duration: 0.5, ease: "easeOut" }}
+          >
+            <ellipse className="animate-glow" cx={60} cy={NOZZLE_Y + 18} rx={30} ry={20} fill="#FFB45A" filter={url("b")} />
+          </motion.g>
+
           <motion.g
             style={{ originX: 0.5, originY: 0 }}
             initial={false}
             animate={FLAME_SHAPE[flame]}
-            transition={flame === "blast" ? { type: "spring", stiffness: 260, damping: 13 } : { duration: 0.6, ease: "easeOut" }}
+            transition={flame === "blast" ? { type: "spring", stiffness: 260, damping: 12 } : { type: "spring", stiffness: 140, damping: 18 }}
           >
-            <g className={`origin-top [transform-box:fill-box] ${flame === "stall" ? "animate-sputter" : "animate-flicker"}`}>
-              {design.nozzles.map(([x, w]) => (
-                <g key={x}>
-                  <path d={`M${x - w / 2} ${NOZZLE_Y}Q${x} ${NOZZLE_Y + w * 4.5} ${x + w / 2} ${NOZZLE_Y}Z`} fill={url("f")} />
-                  <path d={`M${x - w / 4} ${NOZZLE_Y}Q${x} ${NOZZLE_Y + w * 2.2} ${x + w / 4} ${NOZZLE_Y}Z`} fill="#FFF6DD" opacity={0.9} />
-                </g>
-              ))}
-            </g>
+            {design.nozzles.map(([x, w], i) => (
+              <g
+                key={x}
+                className={cn("origin-top [transform-box:fill-box]", flame === "stall" ? "animate-sputter" : hot ? "animate-flame-fast" : "animate-flame")}
+                style={{ animationDelay: `${-i * 0.17}s` }}
+              >
+                <path d={plume(x, w, w * 4.4)} fill={url("f")} />
+                <path className="animate-core" d={plume(x, w * 0.5, w * 2.1)} fill="#FFF6DD" style={{ animationDelay: `${-i * 0.06}s` }} />
+              </g>
+            ))}
           </motion.g>
+
+          {/* Sparks keep falling off the nozzles, even while cruising. */}
+          {flame !== "stall" &&
+            EMBERS.map(([dx, dy, dur, delay], i) => {
+              const [nx, nw] = design.nozzles[i % design.nozzles.length];
+              const pace = EMBER_PACE[flame];
+              return (
+                <circle
+                  key={i}
+                  className="animate-ember origin-center [transform-box:fill-box]"
+                  cx={nx + ((i % 3) - 1) * nw * 0.18}
+                  cy={NOZZLE_Y + 6}
+                  r={i % 2 ? 1.1 : 1.5}
+                  fill={i % 3 === 0 ? "#FFF2C8" : "#FFB45A"}
+                  style={
+                    {
+                      "--dx": `${dx * pace.spread}px`,
+                      "--dy": `${dy * pace.spread}px`,
+                      "--dur": `${dur * pace.time}s`,
+                      "--delay": `${delay}s`,
+                    } as CSSProperties
+                  }
+                />
+              );
+            })}
         </>
       )}
 

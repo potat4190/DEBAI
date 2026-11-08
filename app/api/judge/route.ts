@@ -3,7 +3,6 @@ import {
   clampScore,
   confidenceScore,
   contentWordCount,
-  CRITERION_MAX,
   countFillersAndStutters,
   deliveryFromVoicedText,
   otherSide,
@@ -12,6 +11,7 @@ import {
   type Delivery,
   type DestinationId,
   type JudgeResult,
+  type RubricKey,
   type Side,
   type TurnScore,
 } from "@/lib/game";
@@ -22,9 +22,11 @@ import {
   distillPrompt,
   distillSchema,
   JUDGE_SYSTEM,
+  JUDGED_KEYS,
   judgePrompt,
   judgeSchema,
   type Distilled,
+  type JudgedKey,
   type JudgeEntry,
   type RawJudge,
   type RawTurnScore,
@@ -47,6 +49,7 @@ interface Body {
 // On the opening exchange the user has nothing to rebut, so neither side is scored on rebuttal:
 // both get this fixed (middle) value. Otherwise the AI, which always answers the user, gets a free edge.
 const OPENING_REBUTTAL = 2;
+const OPENING_NOTE = "Opening statement: nothing to answer yet.";
 
 /** One judge pass. Labels are anonymous; `userFirst` decides who is shown as Speaker 1. */
 interface Pass {
@@ -83,9 +86,9 @@ const hasFallacy = (r: RawTurnScore) => {
  * Averages one debater's scores across the passes, criterion by criterion, and adds the
  * measured confidence score (the AI judge never sees delivery, only the points made).
  */
-function combine(scores: RawTurnScore[], opening: boolean, delivery: Delivery): TurnScore {
-  const avg = (k: "claim" | "evidence" | "relevance" | "rebuttal") =>
-    clampScore(scores.reduce((a, s) => a + clampScore(s[k]), 0) / scores.length);
+function combine(passes: Pass[], pick: (p: Pass) => RawTurnScore, opening: boolean, delivery: Delivery, names: Names): TurnScore {
+  const scores = passes.map(pick);
+  const avg = (k: JudgedKey) => clampScore(scores.reduce((a, s) => a + clampScore(s[k]), 0) / scores.length);
   const rubric = {
     claim: avg("claim"),
     evidence: avg("evidence"),
@@ -95,13 +98,27 @@ function combine(scores: RawTurnScore[], opening: boolean, delivery: Delivery): 
   };
   const confidence = confidenceScore(delivery);
   rubric.confidence = confidence.score;
+
+  // Each category's note comes from the pass whose score for it is closest to the combined score.
+  const notes: TurnScore["notes"] = { confidence: confidence.note };
+  for (const k of JUDGED_KEYS) {
+    const from = passes.reduce((best, p) =>
+      Math.abs(clampScore(pick(p)[k]) - rubric[k]) < Math.abs(clampScore(pick(best)[k]) - rubric[k]) ? p : best,
+    );
+    notes[k] = relabel(pick(from).notes?.[k] ?? "", from.userFirst, names);
+  }
+  if (opening) notes.rebuttal = OPENING_NOTE;
+
   // A fallacy stalls the rocket, so it only counts when every pass flagged one.
   const fallacies = scores.map(hasFallacy);
+  const fixed: RubricKey[] = [...(opening ? ["rebuttal" as const] : []), ...(delivery.spoken ? [] : ["confidence" as const])];
   return {
     rubric,
     total: rubric.claim + rubric.evidence + rubric.rebuttal + rubric.relevance + rubric.confidence,
     delivery: confidence.note,
-    reason: (scores[0].reason ?? "").trim(),
+    notes,
+    fixed: fixed.length ? fixed : undefined,
+    reason: relabel(scores[0].reason ?? "", passes[0].userFirst, names),
     fallacy: fallacies.every(Boolean) ? fallacies[0] : null,
   };
 }
@@ -129,7 +146,12 @@ async function judgeWithGemini(body: Body): Promise<Pass[]> {
   // Safeguard 2: each debater is shown with the exact point they had to answer. On the opening
   // exchange both turns are shown as standalone statements (rebuttals folded into claims), so the
   // AI doesn't look more engaged just because it spoke second.
-  const standalone = (t: Distilled): Distilled => ({ claims: [...t.rebuttals, ...t.claims], evidence: t.evidence, rebuttals: [] });
+  const standalone = (t: Distilled): Distilled => ({
+    claims: [...t.rebuttals, ...t.claims],
+    evidence: t.evidence,
+    rebuttals: [],
+    problems: t.problems ?? [],
+  });
   const user: JudgeEntry = context
     ? { side: sideLabel(userSide), answering: d.context, turn: d.turn1 }
     : { side: sideLabel(userSide), answering: null, turn: standalone(d.turn1) };
@@ -176,8 +198,10 @@ export async function POST(req: Request) {
     : { spoken: false, words: contentWordCount(body.userText), ...countFillersAndStutters(body.userText), longPauses: 0 };
   const aiDelivery = deliveryFromVoicedText(body.aiVoiced || body.aiText);
 
-  const user = combine(passes.map(userScore), opening, userDelivery);
-  const ai = combine(passes.map(aiScore), opening, aiDelivery);
+  const vehicles = vehiclesFor(body.destination ?? "moon");
+  const names: Names = { user: vehicles.user.name, ai: vehicles.ai.name };
+  const user = combine(passes, userScore, opening, userDelivery, names);
+  const ai = combine(passes, aiScore, opening, aiDelivery, names);
   const winner = user.total > ai.total ? "user" : ai.total > user.total ? "ai" : "tie";
 
   // Take the wording from a pass whose own winner matches the combined result.
@@ -188,14 +212,13 @@ export async function POST(req: Request) {
   };
   const voice = passes.find((p) => passWinner(p) === winner) ?? passes[0];
 
-  const vehicles = vehiclesFor(body.destination ?? "moon");
-  const names: Names = { user: vehicles.user.name, ai: vehicles.ai.name };
   const result: JudgeResult = {
     user,
     ai,
     winner,
     winningSummary: relabel(voice.raw.winningSummary, voice.userFirst, names),
-    verdict: `${relabel(voice.raw.verdict, voice.userFirst, names)} Confidence: ${names.user} ${user.rubric.confidence}/${CRITERION_MAX}, ${names.ai} ${ai.rubric.confidence}/${CRITERION_MAX}.`,
+    // Confidence is shown with each side's scores, so the verdict sticks to the points made.
+    verdict: relabel(voice.raw.verdict, voice.userFirst, names),
   };
   return NextResponse.json(result);
 }

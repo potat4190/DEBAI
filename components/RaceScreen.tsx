@@ -3,18 +3,18 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { AnimatePresence, animate, motion, useMotionValue, useTransform } from "motion/react";
 import {
   BARGE_IN_MS,
-  CRITERION_MAX,
   MAX_SCORE,
   STREAK_LENGTH,
   VOICE_PROFILES,
-  formatClock,
   formatMiles,
   getDestination,
   otherSide,
   pickMood,
+  raceLimitMs,
   sideLabel,
   stripCues,
   countFillersAndStutters,
+  timeUpOutcome,
   vehiclesFor,
   type CutoffReason,
   type Delivery,
@@ -35,14 +35,16 @@ import { startMonitor, stepMonitor, type MonitorState } from "@/lib/client/turnM
 import { useLiveCaptions } from "@/lib/client/useLiveCaptions";
 import { useRecorder } from "@/lib/client/useRecorder";
 import { VoiceActivity } from "@/lib/client/voiceActivity";
+import { cn } from "@/lib/utils";
 import type { Integrations, RaceSummary } from "./DebAI";
-import { Corners, Dot, Label, MicIcon, Spinner, TopBar, btnGhost, btnPrimarySm, chipBtn, cx } from "./ui";
-import { EarthHorizon, GridOverlay, PlanetOrb, Rocket, SpeedField, type FlameState } from "./visuals";
+import { Corners, Dot, MicIcon, Spinner, TopBar, btnGhost, btnPrimarySm, chipBtn } from "./hud";
+import { BLAST_SECONDS, BOOST_SECONDS, RaceTrack } from "./RaceTrack";
+import { EASE_OUT, RevealGroup, RevealItem } from "./reveal";
 
 const PHASE_LABEL: Record<Phase, string> = {
-  user: "YOUR TURN · SPEAK OR TYPE YOUR ARGUMENT",
+  user: "YOUR TURN",
   opponent: "{AI} IS TALKING…",
-  waiting: "FINAL EXCHANGE · JUDGE SCORING",
+  waiting: "JUDGE SCORING THE FINAL EXCHANGE…",
   finishing: "COMPUTING FINAL TRAJECTORY…",
 };
 
@@ -85,6 +87,8 @@ function cachedClip(text: string, speed: number): Clip {
 
 // The transcript normally takes 1-2 s; never let a stuck recording hold up the AI's turn.
 const TRANSCRIPT_TIMEOUT_MS = 12_000;
+/** How long "TIME'S UP" stays on screen before the results. */
+const TIME_UP_HOLD_MS = 1600;
 
 /** Used if the judge fails twice in a row, so the race can carry on. */
 function fallbackJudge(): JudgeResult {
@@ -97,27 +101,12 @@ function fallbackJudge(): JudgeResult {
   return { user: score, ai: { ...score }, winner: "tie", winningSummary: "", verdict: "Judge unavailable: scored as a tie." };
 }
 
-// Race track geometry (px): 0% sits near the horizon, 100% on the target line.
-const TRACK_TARGET_Y = 150;
-const TRACK_ZERO_Y = 430;
-const CLOUD_LAYERS = [
-  { at: 0.25, name: "CUMULUS" },
-  { at: 0.5, name: "CIRRUS" },
-  { at: 0.75, name: "NOCTILUCENT" },
-];
-const EASE_OUT: [number, number, number, number] = [0.22, 1, 0.36, 1];
-const BOOST_SECONDS = 1.8;
-/** The rocket that gained more speed fires a burst for this long before it starts climbing. */
-const BLAST_SECONDS = 0.7;
-/** Track rockets are 48 px wide: name label (18 px) + nose to engine nozzles (86 px). */
-const ROCKET_ENGINE_OFFSET = 104;
-
-const TRACK_BG = "linear-gradient(to top, #0a1830 0%, #070e1f 26%, #04060e 62%, #030409 100%)";
-const CLOUD_BG =
-  "radial-gradient(ellipse 30% 50% at 20% 50%, rgba(255,255,255,0.07), transparent 70%), radial-gradient(ellipse 35% 50% at 70% 50%, rgba(255,255,255,0.06), transparent 70%)";
-
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
+const mmss = (ms: number) => {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
 
 export default function RaceScreen({
   config,
@@ -150,6 +139,9 @@ export default function RaceScreen({
   const timelineEnd = useRef<HTMLDivElement>(null);
   const submitting = useRef(false);
   const finishedRef = useRef(false);
+  /** The race clock ran out: no new turns, only the scoring of exchanges already spoken. */
+  const timeUpRef = useRef(false);
+  const [timeUp, setTimeUp] = useState(false);
 
   const captions = useLiveCaptions();
   const captionsRef = useRef("");
@@ -175,7 +167,7 @@ export default function RaceScreen({
   const bargeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const clipsRef = useRef<Partial<Record<ClipKind, Clip[]>>>({});
 
-  // Clocks: mission elapsed time and the user's turn timer.
+  // Clocks: the race clock (counts down from the destination's time limit) and your turn timer.
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
@@ -244,9 +236,18 @@ export default function RaceScreen({
     recorder.stop();
   }
 
+  /** Stops listening, talking and the barge-in detector. */
+  function silenceEverything() {
+    if (bargeTimerRef.current) clearInterval(bargeTimerRef.current);
+    bargeTimerRef.current = null;
+    stopAudio();
+    captions.stop();
+    recorder.discard();
+  }
+
   // Hands-free: open the mic when your turn starts.
   useEffect(() => {
-    if (phase !== "user" || !voiceInput || !handsFree || finishedRef.current) return;
+    if (phase !== "user" || !voiceInput || !handsFree || finishedRef.current || timeUpRef.current) return;
     typedRef.current = Boolean(stateRef.current.draft.trim());
     startSpeaking();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -282,6 +283,12 @@ export default function RaceScreen({
     }, 100);
     return () => clearInterval(t);
   }, [phase, recording, interruptions, profile.timing]);
+
+  function finish(outcome: Required<Outcome>, rockets: { user: RocketState; ai: RocketState }) {
+    const end = Date.now();
+    act({ type: "finished", at: end });
+    onFinish({ exchanges: stateRef.current.exchanges, outcome, user: rockets.user, ai: rockets.ai, elapsedMs: end - startedAt.current });
+  }
 
   /** Scores an exchange in the background; exchanges are applied strictly in order. */
   function scoreInBackground(input: {
@@ -324,35 +331,54 @@ export default function RaceScreen({
       if (outcome.over) {
         // Race over: stop listening and talking, let the rockets finish climbing, then show results.
         finishedRef.current = true;
-        if (bargeTimerRef.current) clearInterval(bargeTimerRef.current);
-        stopAudio();
-        captions.stop();
-        recorder.discard();
+        silenceEverything();
       }
       await wait((BLAST_SECONDS + BOOST_SECONDS) * 1000 + 400);
       act({ type: "boostDone" });
-      if (outcome.over) {
-        const end = Date.now();
-        act({ type: "finished", at: end });
-        onFinish({
-          exchanges: stateRef.current.exchanges,
-          outcome: outcome as Required<Outcome>,
-          user: exchange.userAfter,
-          ai: exchange.aiAfter,
-          elapsedMs: end - startedAt.current,
-        });
-      }
+      if (outcome.over) finish(outcome as Required<Outcome>, { user: exchange.userAfter, ai: exchange.aiAfter });
     });
   }
 
+  /**
+   * The race clock ran out before either rocket arrived. A turn in progress is dropped, exchanges
+   * already spoken are still scored, then the rocket closer to the destination wins.
+   */
+  async function endOnTime() {
+    if (finishedRef.current || timeUpRef.current) return;
+    const p = stateRef.current.phase;
+    if (p === "waiting" || p === "finishing") return; // the final exchange is already in: it decides the race
+    timeUpRef.current = true;
+    setTimeUp(true);
+    silenceEverything();
+    act({ type: "timeUp" });
+    await scoringRef.current;
+    if (finishedRef.current) return; // one of those exchanges ended the race (a rocket arrived)
+    finishedRef.current = true;
+    const s = stateRef.current;
+    const total = (k: "user" | "ai") => s.exchanges.reduce((sum, e) => sum + e.judge[k].total, 0);
+    const outcome = timeUpOutcome(s.user, s.ai, total("user"), total("ai"));
+    act({ type: "ended", outcome });
+    await wait(TIME_UP_HOLD_MS);
+    finish(outcome, { user: s.user, ai: s.ai });
+  }
+
+  const limitMs = raceLimitMs(dest);
+  const timeLeftMs = Math.max(0, startedAt.current + limitMs - (stoppedAt ?? now));
+  const outOfTime = timeLeftMs <= 0;
+  useEffect(() => {
+    if (outOfTime) void endOnTime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outOfTime]);
+
   async function submitTurn(opts: { cutoff?: CutoffReason } = {}) {
-    if (submitting.current || finishedRef.current || stateRef.current.phase !== "user") return;
+    if (submitting.current || finishedRef.current || timeUpRef.current || stateRef.current.phase !== "user") return;
     submitting.current = true;
     const before = stateRef.current;
     const index = before.exchanges.length + before.pending.length + 1;
     const last = index >= dest.maxExchanges;
     const speed = profile.speed;
     const { cutoff } = opts;
+    const stopped = () => finishedRef.current || timeUpRef.current;
 
     // The AI speaks first thing: a cut-in line, or sometimes a quick "Hmm" while it thinks.
     const lead = cutoff ? clipsRef.current[cutoff] : Math.random() < 0.6 ? clipsRef.current.thinking : undefined;
@@ -374,7 +400,7 @@ export default function RaceScreen({
       let loudMs = 0;
       bargeTimerRef.current = setInterval(() => {
         const vad = vadRef.current;
-        if (!vad || finishedRef.current) return;
+        if (!vad || stopped()) return;
         const at = Date.now();
         const { loud } = vad.sample(at);
         if (at - armedAt < 300) return; // ignore the AI's first syllable leaking into the mic
@@ -401,6 +427,7 @@ export default function RaceScreen({
       monitorRef.current = null;
       captions.stop();
       const spoken = await Promise.race([recorder.finish(true), wait(TRANSCRIPT_TIMEOUT_MS).then(() => "")]);
+      if (stopped()) return;
       const userText = [before.draft.trim(), spoken].filter(Boolean).join(" ");
 
       // Confidence: long pauses come from the mic; fillers and stutters from whichever text caught
@@ -434,7 +461,7 @@ export default function RaceScreen({
           turn: interjectionLine ? { cutoff, interjection: interjectionLine.text } : {},
         },
         (sentence) => {
-          if (barged || finishedRef.current) return;
+          if (barged || stopped()) return;
           sentences.push(sentence);
           act({ type: "sentence", sentence });
           voice.push({ text: sentence.tagged, speed });
@@ -452,7 +479,7 @@ export default function RaceScreen({
       ]);
       if (bargeTimerRef.current) clearInterval(bargeTimerRef.current);
       bargeTimerRef.current = null;
-      if (finishedRef.current) return;
+      if (stopped()) return;
 
       // When cut off, only the sentences you actually heard count.
       const heard = barged ? sentences.slice(0, Math.max(1, played - leadItems + 1)) : sentences;
@@ -494,33 +521,36 @@ export default function RaceScreen({
   }
 
   const exchangeNo = Math.min(exchanges.length + pending.length + (phase === "user" ? 1 : 0), dest.maxExchanges);
-  const met = formatClock((stoppedAt ?? now) - startedAt.current);
   const busy = phase !== "user";
-  const timerText = `${String(Math.floor(turnLeft / 60)).padStart(2, "0")}:${String(turnLeft % 60).padStart(2, "0")}`;
-  const commsLabel =
-    phase !== "user"
+  const timerText = mmss(turnLeft * 1000);
+  const clockClass = timeLeftMs <= 15_000 ? "text-bad" : timeLeftMs <= 60_000 ? "text-warn" : "text-ink";
+  const commsLabel = timeUp
+    ? "TIME'S UP · THE CLOSER ROCKET WINS"
+    : phase !== "user"
       ? withAi(PHASE_LABEL[phase])
       : transcribing
         ? "TRANSCRIBING YOUR TURN…"
         : recording
           ? endingIn !== null
-            ? `PAUSED · SENDING IN ${endingIn.toFixed(1)}S`
+            ? `SENDING IN ${endingIn.toFixed(1)}S`
             : talking
               ? "LISTENING · STOP TALKING TO SEND"
-              : "LISTENING · TAKE A MOMENT TO THINK, THEN SPEAK"
+              : "LISTENING · SPEAK WHEN READY"
           : PHASE_LABEL.user;
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-space">
       <TopBar transparent>
-        <span>DEB“AI”-01 · LIVE{integrations && !integrations.gemini ? " · SIMULATION" : ""}</span>
+        <span className="flex items-center gap-3">
+          DEB“AI”
+          {integrations && !integrations.gemini && <span className="text-warn">SIMULATION</span>}
+        </span>
         <span className="flex items-center gap-2">
           <Dot color="var(--color-bad)" pulse />
-          EXCHANGE {exchangeNo} / {dest.maxExchanges} MAX
+          EXCHANGE {exchangeNo}/{dest.maxExchanges}
         </span>
-        <span>MET T+ {met}</span>
-        <span className={phase === "user" && turnLeft <= 10 ? "text-bad" : "text-ink"}>
-          TURN TIMER {phase === "user" ? timerText : "--:--"}
+        <span className={cn("tabular-nums", clockClass)} aria-label="Race time left">
+          T– {mmss(timeLeftMs)}
         </span>
         <span className="flex items-center gap-2">
           <button type="button" className={chipBtn} onClick={toggleMute} aria-pressed={muted}>
@@ -530,56 +560,81 @@ export default function RaceScreen({
         </span>
       </TopBar>
 
-      <div className="mx-auto flex max-w-[1280px] flex-col gap-3.5 px-4 pb-6 pt-[18px] sm:px-6">
-        <div className="flex flex-wrap items-baseline gap-x-[18px] gap-y-1.5 border border-white/12 bg-white/[0.025] px-[18px] py-3">
-          <Label>MOTION</Label>
+      <RevealGroup className="mx-auto flex max-w-[1280px] flex-col gap-3.5 px-4 pb-6 pt-[18px] sm:px-6" stagger={0.06}>
+        <RevealItem className="flex flex-wrap items-baseline gap-x-[18px] gap-y-1.5 border border-white/12 bg-white/[0.025] px-[18px] py-3">
           <span className="flex-[1_1_300px] text-[17px] font-medium">{config.motion}</span>
-          <Label className="tracking-[2px]">
-            {vehicles.user.tag} · {sideLabel(config.side)} · {vehicles.ai.tag} · {sideLabel(otherSide(config.side))} ·{" "}
-            {config.difficulty.toUpperCase()}
-          </Label>
-        </div>
+          <span className="font-mono text-[11px] tracking-[2px] text-muted-foreground">
+            YOU {sideLabel(config.side)} · AI {sideLabel(otherSide(config.side))} · IQ {profile.iq}
+          </span>
+        </RevealItem>
 
         <div className="flex flex-wrap items-stretch gap-3.5">
           <div className="flex min-w-0 flex-[999_1_600px] flex-col gap-2.5">
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-2.5 font-mono">
-              <Telemetry label={`${vehicles.ai.tag} · AI`} color="var(--color-ai)" r={ai} dest={dest} corner="tl" boosting={boosting} />
+            <RevealItem className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-2.5 font-mono">
+              <Telemetry label={vehicles.ai.tag} color="var(--color-ai)" r={ai} dest={dest} corner="tl" boosting={boosting} />
               <Telemetry label={`${vehicles.user.tag} · ${config.callsign.toUpperCase()}`} color="var(--color-you)" r={user} dest={dest} corner="tr" boosting={boosting} />
-            </div>
+            </RevealItem>
 
-            <RaceTrack dest={dest} vehicles={vehicles} user={user} ai={ai} boosting={boosting} />
+            <RevealItem>
+              <RaceTrack dest={dest} vehicles={vehicles} user={user} ai={ai} boosting={boosting} boostKey={exchanges.length} />
+            </RevealItem>
 
-            <section className="relative flex flex-col gap-3 border border-line bg-white/[0.02] px-4 py-3.5">
+            <RevealItem className="relative flex flex-col gap-3 border border-line bg-white/[0.02] px-4 py-3.5">
               <Corners color="var(--color-ink)" both={false} size={12} />
               <div className="flex items-center justify-between gap-2 font-mono text-[11px] tracking-[3px] text-soft">
-                <span>COMMS · {commsLabel}</span>
-                {(busy || transcribing) && <Spinner />}
+                <span className={timeUp ? "text-warn" : undefined}>{commsLabel}</span>
+                <span className="flex items-center gap-3">
+                  {(busy || transcribing) && <Spinner />}
+                  {phase === "user" && !timeUp && (
+                    <span className={cn("tabular-nums", turnLeft <= 10 ? "text-bad" : "text-ink")} aria-label="Turn time left">
+                      {timerText}
+                    </span>
+                  )}
+                </span>
               </div>
 
-              {notice && <p className="m-0 font-mono text-[11px] tracking-[2px] text-warn">{notice}</p>}
+              <AnimatePresence>
+                {notice && (
+                  <motion.p
+                    key={notice}
+                    className="m-0 font-mono text-[11px] tracking-[2px] text-warn"
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                  >
+                    {notice}
+                  </motion.p>
+                )}
+              </AnimatePresence>
 
               {interruptions && phase === "user" && recording && <PatienceBar patience={patience} name={vehicles.ai.tag} />}
 
-              {transmission.length > 0 && (
-                <div className="flex flex-col gap-1.5 border-l-2 border-ai bg-ai/5 px-3 py-2.5">
-                  <Label className="text-[11px] tracking-[2px]" color="var(--color-ai)">
-                    {vehicles.ai.tag} · {phase === "opponent" ? "INCOMING TRANSMISSION" : "LAST TRANSMISSION"}
-                  </Label>
-                  <p className="m-0 text-[15px] leading-[1.55] text-body">
-                    {transmission.map((s, i) => (
-                      <motion.span key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
-                        {s.text}{" "}
-                      </motion.span>
-                    ))}
-                  </p>
-                </div>
-              )}
+              <AnimatePresence initial={false}>
+                {transmission.length > 0 && (
+                  <motion.div
+                    className="flex flex-col gap-1.5 border-l-2 border-ai bg-ai/5 px-3 py-2.5"
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.35, ease: EASE_OUT }}
+                  >
+                    <span className="font-mono text-[10px] tracking-[2px] text-ai">{vehicles.ai.tag}</span>
+                    <p className="m-0 text-[15px] leading-[1.55] text-body">
+                      {transmission.map((s, i) => (
+                        <motion.span key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.45 }}>
+                          {s.text}{" "}
+                        </motion.span>
+                      ))}
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               <label htmlFor="argument" className="sr-only">Your argument</label>
               <textarea
                 id="argument"
                 className="min-h-24 w-full resize-y rounded-[2px] border border-line-2 bg-field px-3.5 py-3 text-[15px] leading-normal text-ink outline-none focus:outline focus:outline-1 focus:outline-ai disabled:opacity-60"
-                placeholder={phase === "user" ? "Make your argument. Ctrl+Enter to transmit." : ""}
+                placeholder={phase === "user" && !timeUp ? "Make your argument. Ctrl+Enter to send." : ""}
                 value={draft}
                 disabled={busy}
                 onChange={(e) => {
@@ -592,8 +647,7 @@ export default function RaceScreen({
                 rows={4}
               />
               {recording && (
-                <p className="m-0 text-sm italic text-muted">
-                  <span className="mr-2 font-mono text-[9px] not-italic tracking-[2px]">LIVE CAPTIONS · NOT SCORED</span>
+                <p className="m-0 text-sm italic text-muted-foreground">
                   {captions.text ? `${captions.text}…` : captions.supported ? "Listening…" : "Recording…"}
                 </p>
               )}
@@ -603,7 +657,7 @@ export default function RaceScreen({
                 {voiceInput ? (
                   <button
                     type="button"
-                    className={cx(btnGhost, recording && "animate-blink border-bad text-[#ffb3ab]")}
+                    className={cn(btnGhost, recording && "animate-blink border-bad text-[#ffb3ab]")}
                     disabled={busy || transcribing}
                     onClick={() => {
                       // Stopping turns hands-free off (the transcript lands in the text box); SPEAK turns it back on.
@@ -612,31 +666,25 @@ export default function RaceScreen({
                       else startSpeaking();
                     }}
                   >
-                    <MicIcon /> {recording ? "LISTENING · TAP TO STOP" : transcribing ? "TRANSCRIBING…" : "SPEAK"}
+                    <MicIcon /> {recording ? "TAP TO STOP" : transcribing ? "TRANSCRIBING…" : "SPEAK"}
                   </button>
                 ) : (
-                  <span className="font-mono text-[10px] tracking-[2px] text-muted">
-                    {integrations?.voice === false ? "VOICE INPUT OFF · TYPE YOUR ARGUMENT" : "MIC RECORDING UNAVAILABLE IN THIS BROWSER · TYPE INSTEAD"}
-                  </span>
+                  <span />
                 )}
                 <button type="button" className={btnPrimarySm} disabled={busy} onClick={() => void submitTurn()}>
                   TRANSMIT <span aria-hidden="true">→</span>
                 </button>
               </div>
-            </section>
+            </RevealItem>
           </div>
 
-          <aside className="relative flex max-h-[1080px] flex-[1_1_300px] flex-col border border-line bg-white/[0.02] font-mono">
+          <RevealItem className="relative flex max-h-[1040px] flex-[1_1_300px] flex-col border border-line bg-white/[0.02] font-mono">
             <Corners color="var(--color-ink)" both={false} size={12} />
-            <div className="flex justify-between gap-2 border-b border-line px-4 py-3.5 text-[11px] tracking-[3px]">
-              <span className="text-soft">DEBATE TIMELINE</span>
-              <span className="text-muted">LIVE</span>
-            </div>
+            <div className="border-b border-line px-4 py-3.5 text-[11px] tracking-[3px] text-soft">TIMELINE</div>
             <div className="flex-auto overflow-y-auto">
               {exchanges.length === 0 && pending.length === 0 && phase === "user" && (
-                <p className="m-0 px-4 py-3.5 font-sans text-[13px] leading-normal text-muted">
-                  No exchanges yet. Open the debate: state your position and your best reason.
-                  {voiceInput && handsFree && " Just start talking; your turn ends when you stop."}
+                <p className="m-0 px-4 py-3.5 font-sans text-[13px] leading-normal text-muted-foreground">
+                  Open with your position and your best reason.
                 </p>
               )}
               <AnimatePresence initial={false}>
@@ -649,26 +697,18 @@ export default function RaceScreen({
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 0.6 }}
                     exit={{ opacity: 0 }}
-                    className="flex flex-col gap-1.5 border-b border-white/8 px-4 py-3.5 text-[11px]"
+                    className="flex justify-between gap-2 border-b border-white/8 px-4 py-3.5 text-[10px] tracking-[2px] text-muted-foreground"
                   >
-                    <div className="flex justify-between text-[10px] tracking-[2px] text-muted">
-                      <span>EXCHANGE {String(p.index).padStart(2, "0")}</span>
-                      <span>PENDING</span>
-                    </div>
-                    <span className="text-muted">{p.aiText ? "Judge scoring…" : `${vehicles.ai.name} replying…`}</span>
+                    <span>EXCHANGE {String(p.index).padStart(2, "0")}</span>
+                    <span>{p.aiText ? "SCORING…" : "REPLYING…"}</span>
                   </motion.article>
                 ))}
               </AnimatePresence>
               <div ref={timelineEnd} />
             </div>
-            <div className="mt-auto border-t border-white/8 px-4 py-3 text-[10px] leading-[1.6] tracking-[1px] text-muted">
-              V = V + S·K + max(0, S−Sₒₚₚ)·B
-              <br />
-              K {dest.K.toLocaleString("en-US")} · B {dest.B.toLocaleString("en-US")} · Δt 60 S
-            </div>
-          </aside>
+          </RevealItem>
         </div>
-      </div>
+      </RevealGroup>
     </main>
   );
 }
@@ -680,112 +720,12 @@ function PatienceBar({ patience, name }: { patience: number; name: string }) {
   const left = 1 - patience;
   const color = left < 0.35 ? "var(--color-bad)" : left < 0.65 ? "var(--color-warn)" : "var(--color-ai)";
   return (
-    <div className="flex items-center gap-3 font-mono text-[10px] tracking-[2px] text-muted">
+    <div className="flex items-center gap-3 font-mono text-[10px] tracking-[2px] text-muted-foreground">
       <span>{name} PATIENCE</span>
       <span className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/10" role="meter" aria-label={`${name} patience`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(left * 100)}>
         <span className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-200" style={{ width: `${left * 100}%`, background: color }} />
       </span>
     </div>
-  );
-}
-
-function RaceTrack({
-  dest,
-  vehicles,
-  user,
-  ai,
-  boosting,
-}: {
-  dest: Destination;
-  vehicles: { user: Vehicle; ai: Vehicle };
-  user: RocketState;
-  ai: RocketState;
-  boosting: boolean;
-}) {
-  // Whoever gained more speed this exchange gets the boost burst (both, on a tie).
-  const boosted = (me: RocketState, them: RocketState) => boosting && (me.lastDv ?? 0) >= (them.lastDv ?? 0);
-  return (
-    <div className="relative h-[540px] overflow-hidden border border-white/12" style={{ background: TRACK_BG }}>
-      <SpeedField boosting={boosting} />
-      <GridOverlay />
-      <PlanetOrb id={dest.id} size={300} style={{ position: "absolute", left: "50%", top: -170, marginLeft: -150 }} />
-
-      <div className="absolute left-11 right-0 z-[1] flex -translate-y-1/2 items-center gap-3 pr-4" style={{ top: TRACK_TARGET_Y }}>
-        <div className="flex-1 border-t border-white/35" />
-        <span className="whitespace-nowrap font-mono text-[10px] tracking-[2px] text-soft">
-          TARGET · {dest.name.toUpperCase()} · {formatMiles(dest.distance)} MI
-        </span>
-        <div className="flex-1 border-t border-white/35" />
-      </div>
-
-      <div
-        className="absolute left-3 flex -translate-y-1.5 flex-col justify-between font-mono text-[9px] tracking-[1px] text-muted"
-        style={{ top: TRACK_TARGET_Y, height: TRACK_ZERO_Y - TRACK_TARGET_Y }}
-        aria-hidden="true"
-      >
-        <span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span>
-      </div>
-
-      {CLOUD_LAYERS.map((c) => (
-        <div
-          key={c.name}
-          className="pointer-events-none absolute left-11 right-0 h-[26px] -translate-y-1/2 border-t border-dashed border-white/7"
-          style={{ top: TRACK_ZERO_Y - c.at * (TRACK_ZERO_Y - TRACK_TARGET_Y), background: CLOUD_BG }}
-          aria-hidden="true"
-        >
-          <span className="absolute right-4 top-1 font-mono text-[8px] tracking-[2px] text-muted/70">{c.name}</span>
-        </div>
-      ))}
-
-      <EarthHorizon height={130} label={false} />
-
-      <TrackRocket side="left" pct={Math.min(1, ai.d / dest.distance)} color="#6FB6E8" vehicle={vehicles.ai} idp="race-a" blast={boosted(ai, user)} stalled={ai.stalled} />
-      <TrackRocket side="right" pct={Math.min(1, user.d / dest.distance)} color="#E8833A" vehicle={vehicles.user} idp="race-b" blast={boosted(user, ai)} stalled={user.stalled} />
-
-      <span className="absolute bottom-3 right-3.5 z-[1] font-mono text-[9px] tracking-[2px] text-muted">TRAJECTORY VIEW · NOT TO SCALE</span>
-    </div>
-  );
-}
-
-function TrackRocket({
-  side,
-  pct,
-  color,
-  vehicle,
-  idp,
-  blast,
-  stalled,
-}: {
-  side: "left" | "right";
-  pct: number;
-  color: string;
-  vehicle: Vehicle;
-  idp: string;
-  blast: boolean;
-  stalled: boolean;
-}) {
-  // The rocket's engines sit on its progress line, so the flame stays in view from the start.
-  const top = TRACK_ZERO_Y - pct * (TRACK_ZERO_Y - TRACK_TARGET_Y) - ROCKET_ENGINE_OFFSET;
-  // The engines always burn a little; a boost flares them up, a fallacy makes them sputter.
-  const flame: FlameState = blast ? "blast" : stalled ? "stall" : "idle";
-  return (
-    <motion.div
-      className="absolute z-[2] flex -translate-x-1/2 flex-col items-center gap-1"
-      style={{ left: side === "left" ? "33%" : "67%" }}
-      initial={false}
-      animate={{ top }}
-      // The boosted rocket fires its burst first, then climbs.
-      transition={{ duration: BOOST_SECONDS, ease: EASE_OUT, delay: blast ? BLAST_SECONDS : 0 }}
-    >
-      <span className="whitespace-nowrap font-mono text-[10px] tracking-[2px]" style={{ color }}>{vehicle.tag}</span>
-      <motion.div
-        initial={false}
-        animate={blast ? { x: [0, -1.5, 1.5, -1.2, 1.2, -0.6, 0] } : { x: 0 }}
-        transition={{ duration: BLAST_SECONDS, ease: "linear" }}
-      >
-        <Rocket model={vehicle.id} idp={idp} accent={color} width={48} flame={flame} />
-      </motion.div>
-    </motion.div>
   );
 }
 
@@ -822,7 +762,7 @@ function Telemetry({
   return (
     <div className="relative flex flex-col gap-2.5 border border-line bg-white/[0.02] px-4 py-3.5">
       <span
-        className={cx(
+        className={cn(
           "pointer-events-none absolute size-3 border-0 border-solid",
           corner === "tl" ? "-left-px -top-px border-l border-t" : "-right-px -top-px border-r border-t",
         )}
@@ -831,45 +771,27 @@ function Telemetry({
       />
       <div className="flex items-center justify-between gap-2 text-[11px] tracking-[2px]">
         <span style={{ color }}>{label}</span>
-        <span className="flex items-center gap-1.5">
-          <Dot color={statusColor} size={6} />
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <Dot color={statusColor} size={6} pulse={status !== "NOMINAL"} />
           {status}
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="VELOCITY" unit="MI/S">
-          <AnimatedNumber value={r.v} format={fmtSpeed} />
-        </Stat>
-        <Stat label="LAST ΔV" unit="MI/S">{r.lastDv === null ? "—" : `+${fmtSpeed(r.lastDv)}`}</Stat>
-        <Stat label="LAST SCORE" unit={`/ ${MAX_SCORE}`}>{r.lastScore === null ? "—" : String(r.lastScore)}</Stat>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <span className="flex justify-between text-[9px] tracking-[2px] text-muted">
-          <span>
-            DISTANCE · <AnimatedNumber value={r.d} format={formatMiles} /> MI
-          </span>
-          <span>{pct.toFixed(0)}%</span>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-2xl tabular-nums">
+          <AnimatedNumber value={r.v} format={fmtSpeed} /> <span className="text-[10px] text-muted-foreground">MI/S</span>
         </span>
-        <span className="block h-[3px] bg-line">
-          <motion.span
-            className="block h-[3px]"
-            style={{ background: color }}
-            initial={false}
-            animate={{ width: `${Math.max(pct, 1)}%` }}
-            transition={{ duration: BOOST_SECONDS, ease: EASE_OUT }}
-          />
+        <span className="text-[10px] tracking-[1px] text-muted-foreground">
+          <AnimatedNumber value={r.d} format={formatMiles} /> MI · {pct.toFixed(0)}%
         </span>
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, unit, children }: { label: string; unit: string; children: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-[9px] tracking-[2px] text-muted">{label}</span>
-      <span className="truncate text-lg">
-        {children} <span className="text-[10px] text-muted">{unit}</span>
+      <span className="block h-[3px] bg-line">
+        <motion.span
+          className="block h-[3px] origin-left"
+          style={{ background: color }}
+          initial={false}
+          animate={{ scaleX: Math.max(pct, 1) / 100 }}
+          transition={{ duration: BOOST_SECONDS, ease: EASE_OUT }}
+        />
       </span>
     </div>
   );
@@ -877,7 +799,6 @@ function Stat({ label, unit, children }: { label: string; unit: string; children
 
 function TimelineEntry({ e, vehicles }: { e: Exchange; vehicles: { user: Vehicle; ai: Vehicle } }) {
   const { judge } = e;
-  const winnerTag = judge.winner === "user" ? vehicles.user.tag : judge.winner === "ai" ? vehicles.ai.tag : "TIE";
   return (
     <motion.article
       layout
@@ -886,59 +807,44 @@ function TimelineEntry({ e, vehicles }: { e: Exchange; vehicles: { user: Vehicle
       transition={{ duration: 0.45, ease: EASE_OUT }}
       className="flex flex-col gap-2.5 border-b border-white/8 px-4 py-3.5"
     >
-      <div className="flex justify-between text-[10px] tracking-[2px] text-muted">
+      <div className="flex justify-between text-[10px] tracking-[2px] text-muted-foreground">
         <span>EXCHANGE {String(e.index).padStart(2, "0")}</span>
-        <span>T+{formatClock(e.at)}</span>
+        <span>{judge.winner === "tie" ? "EVEN" : `${judge.winner === "user" ? vehicles.user.tag : vehicles.ai.tag} AHEAD`}</span>
       </div>
       <div className="grid grid-cols-2 gap-px bg-line">
-        <ScoreCell label={`${vehicles.ai.tag} · SCORE`} color="var(--color-ai)" score={judge.ai.total} dv={e.aiDv} reason={judge.ai.reason} fallacy={judge.ai.fallacy} confidence={judge.ai.rubric.confidence} delivery={judge.ai.delivery} />
-        <ScoreCell label={`${vehicles.user.tag} · SCORE`} color="var(--color-you)" score={judge.user.total} dv={e.userDv} reason={judge.user.reason} fallacy={judge.user.fallacy} confidence={judge.user.rubric.confidence} delivery={judge.user.delivery} />
+        <ScoreCell label={vehicles.ai.tag} color="var(--color-ai)" score={judge.ai.total} fallacy={judge.ai.fallacy} />
+        <ScoreCell label={vehicles.user.tag} color="var(--color-you)" score={judge.user.total} fallacy={judge.user.fallacy} />
       </div>
-      {judge.winningSummary && <TimelineBlock label={`WINNING ARGUMENT · ${winnerTag}`} text={judge.winningSummary} />}
-      <TimelineBlock label="JUDGE" text={judge.verdict} />
-      <TimelineBlock label="FEEDBACK · YOU" text={judge.user.reason} />
+      <p className="m-0 font-sans text-[13px] leading-normal text-body">{judge.verdict}</p>
+      {judge.user.reason && (
+        <p className="m-0 font-sans text-[13px] leading-normal text-muted-foreground">
+          <span className="font-mono text-[9px] tracking-[2px]">YOU · </span>
+          {judge.user.reason}
+        </p>
+      )}
     </motion.article>
   );
 }
 
-function TimelineBlock({ label, text }: { label: string; text: string }) {
+function ScoreCell({ label, color, score, fallacy }: { label: string; color: string; score: number; fallacy: string | null }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[9px] tracking-[2px] text-muted">{label}</span>
-      <p className="m-0 font-sans text-[13px] leading-normal text-body">{text}</p>
-    </div>
-  );
-}
-
-function ScoreCell({
-  label,
-  color,
-  score,
-  dv,
-  reason,
-  fallacy,
-  confidence,
-  delivery,
-}: {
-  label: string;
-  color: string;
-  score: number;
-  dv: number;
-  reason: string;
-  fallacy: string | null;
-  confidence?: number;
-  delivery?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5 bg-space px-2.5 py-2" title={delivery ? `${reason}\nConfidence: ${delivery}` : reason}>
-      <span className="text-[9px] tracking-[2px]" style={{ color }}>{label}</span>
-      <span className="text-base">{score}/{MAX_SCORE}</span>
-      <span className="text-[10px] text-muted">ΔV +{Math.round(dv).toLocaleString("en-US")} MI/S</span>
-      {confidence !== undefined && (
-        <span className="text-[9px] tracking-[1px] text-muted">
-          CONFIDENCE {confidence}/{CRITERION_MAX}{delivery ? ` · ${delivery.toUpperCase()}` : ""}
+    <div className="flex flex-col gap-1.5 bg-space px-2.5 py-2">
+      <span className="flex items-baseline justify-between gap-2">
+        <span className="text-[9px] tracking-[2px]" style={{ color }}>{label}</span>
+        <span className="text-base tabular-nums">
+          {score}
+          <span className="text-[10px] text-muted-foreground">/{MAX_SCORE}</span>
         </span>
-      )}
+      </span>
+      <span className="block h-[2px] bg-line">
+        <motion.span
+          className="block h-[2px] origin-left"
+          style={{ background: color }}
+          initial={{ scaleX: 0 }}
+          animate={{ scaleX: score / MAX_SCORE }}
+          transition={{ duration: 0.9, ease: EASE_OUT, delay: 0.15 }}
+        />
+      </span>
       {fallacy && <span className="text-[9px] tracking-[1px] text-bad">STALL · {fallacy.toUpperCase()}</span>}
     </div>
   );

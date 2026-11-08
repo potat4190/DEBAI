@@ -17,7 +17,7 @@ import {
 
 /**
  * user: your turn · opponent: the AI is talking · waiting: the last exchange is being scored ·
- * finishing: the race is over. Scoring runs in the background, so the next turn starts as soon
+ * finishing: the race is over (a rocket arrived, the exchanges ran out, or the clock did). Scoring runs in the background, so the next turn starts as soon
  * as the AI stops talking and the rockets boost whenever the judge's scores arrive.
  */
 export type Phase = "user" | "opponent" | "waiting" | "finishing";
@@ -58,7 +58,11 @@ export type RaceAction =
   | { type: "boostDone" }
   | { type: "notice"; text: string | null }
   | { type: "finished"; at: number }
-  | { type: "failed"; index: number; error: string };
+  | { type: "failed"; index: number; error: string }
+  /** The race clock ran out: no new turns; exchanges already spoken still get scored. */
+  | { type: "timeUp" }
+  /** The race was decided without a new exchange (the clock ran out). */
+  | { type: "ended"; outcome: Outcome };
 
 export function initialRaceState(dest: Destination): RaceState {
   return {
@@ -87,6 +91,7 @@ export function raceReducer(s: RaceState, a: RaceAction): RaceState {
     case "appendDraft":
       return s.phase === "user" ? { ...s, draft: s.draft ? `${s.draft} ${a.text}` : a.text } : s;
     case "submit":
+      if (s.phase === "finishing") return s;
       return {
         ...s,
         phase: "opponent",
@@ -95,7 +100,7 @@ export function raceReducer(s: RaceState, a: RaceAction): RaceState {
         pending: [...s.pending, { index: a.index, userText: a.userText, aiText: "" }],
       };
     case "sentence":
-      return { ...s, transmission: [...s.transmission, a.sentence] };
+      return s.phase === "finishing" ? s : { ...s, transmission: [...s.transmission, a.sentence] };
     case "opponentDone":
       if (s.phase === "finishing") return s;
       return {
@@ -125,6 +130,7 @@ export function raceReducer(s: RaceState, a: RaceAction): RaceState {
     case "finished":
       return { ...s, stoppedAt: a.at };
     case "failed":
+      if (s.phase === "finishing") return s;
       return {
         ...s,
         phase: "user",
@@ -132,6 +138,17 @@ export function raceReducer(s: RaceState, a: RaceAction): RaceState {
         turnLeft: TURN_SECONDS,
         pending: s.pending.filter((p) => p.index !== a.index),
       };
+    case "timeUp":
+      return {
+        ...s,
+        phase: "finishing",
+        draft: "",
+        notice: null,
+        // An exchange the AI hadn't finished answering is dropped; finished ones are still scored.
+        pending: s.pending.filter((p) => p.aiText),
+      };
+    case "ended":
+      return { ...s, phase: "finishing", outcome: a.outcome };
   }
 }
 

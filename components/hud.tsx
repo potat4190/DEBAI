@@ -1,4 +1,4 @@
-// Shared Tailwind building blocks for the three screens.
+// Shared HUD building blocks (buttons, fields, labels, panel corners) for the three screens.
 import type { ReactNode } from "react";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -25,7 +25,7 @@ export const segBtn =
 /** Small mono uppercase label. */
 export function Label({ children, className, color }: { children: ReactNode; className?: string; color?: string }) {
   return (
-    <span className={cx("font-mono text-[11px] tracking-[3px] text-muted", className)} style={color ? { color } : undefined}>
+    <span className={cx("font-mono text-[11px] tracking-[3px] text-muted-foreground", className)} style={color ? { color } : undefined}>
       {children}
     </span>
   );
@@ -45,7 +45,7 @@ export function TopBar({ children, transparent }: { children: ReactNode; transpa
   return (
     <header
       className={cx(
-        "relative z-[2] flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-b border-line px-4 py-3 font-mono text-[11px] tracking-[2px] text-muted sm:px-6 sm:py-3.5",
+        "relative z-[2] flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-b border-line px-4 py-3 font-mono text-[11px] tracking-[2px] text-muted-foreground sm:px-6 sm:py-3.5",
         transparent ? "bg-transparent" : "bg-space/60",
       )}
     >
@@ -68,7 +68,7 @@ export function Corners({ color, both = true, size = 14 }: { color: string; both
 }
 
 export function Spinner() {
-  return <span className="block size-3 animate-spin rounded-full border border-muted border-t-ink" aria-hidden="true" />;
+  return <span className="block size-3 animate-spin rounded-full border border-muted-foreground border-t-ink" aria-hidden="true" />;
 }
 
 export function MicIcon() {

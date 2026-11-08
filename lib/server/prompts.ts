@@ -115,20 +115,23 @@ export interface Distilled {
   claims: string[];
   evidence: string[];
   rebuttals: string[];
+  /** Reasoning problems (non sequiturs, false facts, dodges), never style. */
+  problems: string[];
 }
 
-/** Most bullets kept per category, so a long turn can't win by listing more points. */
+/** Most bullets kept per category, so a long turn can't win by repeating itself. */
 export const DISTILL_MAX_BULLETS = 3;
 
 export const DISTILL_SYSTEM = [
-  "You rewrite ONE debate turn as bare bullet points so a judge scores the ideas, not the delivery.",
+  "You rewrite ONE debate turn as short bullet points so a judge scores the ideas, not the delivery.",
   "List its claims, its evidence (facts, statistics, examples, causal reasoning) and its rebuttals of the OPPOSING POINT, if one is given.",
-  "Write every bullet in the same plain, neutral register, at most 15 words, whatever the original sounded like.",
-  "A messy, ungrammatical or spoken turn and a polished, eloquent one must come out looking alike if they make the same points.",
-  "Silently fix spelling, grammar, punctuation and speech-to-text errors. Never mention or keep them.",
-  "Remove tone, rhetoric, confidence, filler, repetition and flourishes. Merge points that say the same thing.",
+  "Write every bullet in the same plain, neutral register, at most 15 words, whatever the original sounded like: a messy spoken turn and a polished one must come out looking alike if they make the same points.",
+  "Fix spelling, grammar and speech-to-text errors, and drop filler, tone, rhetoric and repetition. Merge points that say the same thing.",
+  "Never repair the reasoning. Keep every point exactly as strong or as weak as it was: if it is vague, confused, unsupported or doesn't follow, the bullet stays that way. Don't add, strengthen or complete anything.",
+  "Only list a rebuttal when the turn gives a reason against the opposing point. A bare denial ('that's not true', 'no way') becomes 'Denies <the point>, gives no reason'.",
+  "A vague appeal (tradition, values, 'everyone knows', 'I heard') is a claim, not evidence. A single personal story is weak evidence: start that bullet with 'Anecdote:'.",
   `Keep at most ${DISTILL_MAX_BULLETS} bullets per category; if there are more, keep the strongest ones.`,
-  "Do not add, strengthen or weaken anything. A vague appeal (tradition, values, 'everyone knows') is a claim, not evidence.",
+  "In 'problems', name up to 3 real reasoning problems, about 12 words each: a conclusion that doesn't follow, a contradiction, circular reasoning, a clearly false fact or a made-up number, answering a different point than the one raised, or drifting off the motion. Never list grammar, wording, fillers or style. Use an empty array when the reasoning is sound.",
   "Use empty arrays when the turn has none of something.",
 ].join("\n");
 
@@ -146,32 +149,37 @@ export const distillSchema: Schema = {
     claims: { type: Type.ARRAY, items: { type: Type.STRING } },
     evidence: { type: Type.ARRAY, items: { type: Type.STRING } },
     rebuttals: { type: Type.ARRAY, items: { type: Type.STRING } },
+    problems: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
-  required: ["claims", "evidence", "rebuttals"],
+  required: ["claims", "evidence", "rebuttals", "problems"],
 };
 
 // ---------- Judge ----------
 
 export const JUDGE_SYSTEM = [
   "You are an impartial debate judge. Two anonymous debaters, Speaker 1 and Speaker 2, each made one turn.",
-  "Their turns were rewritten as neutral bullet points. Judge ONLY the points: what each debater argued, how well it is supported and how well it answers the other side.",
+  "Their turns were rewritten as neutral bullet points, with any reasoning problems listed under 'Problems'. Judge ONLY the substance: what each debater argued, whether it makes sense, how well it is supported and how well it answers the other side.",
   "",
   "Completely ignore, and never reward or penalize:",
   "- grammar, spelling, punctuation and word choice",
-  "- sentence structure, organization, fluency and how polished or formal it sounds",
-  "- length, the number of points and how confident or rhetorical it is",
+  "- sentence structure, fluency and how polished, formal, confident or rhetorical it sounds",
   "- which speaker is listed first and which number they have",
-  "A short, plain point backed by a real fact or a clear reason scores as high as a long, polished one.",
-  "Judge each debater by the quality of their best points, not by how many they made.",
   "",
-  "Score each debater on four criteria, 0 to 4 each (0 = missing, 1 = weak, 2 = adequate, 3 = strong, 4 = excellent):",
-  "- claim: Is the point clear and on topic?",
-  "- evidence: Is it backed by facts, examples or sound reasoning? Unsupported assertions and vague appeals score low.",
-  "- rebuttal: Does it directly answer the point listed under 'Answering'? Judge how well it defeats that point.",
+  "How to weigh the points:",
+  "- A point must make sense to earn credit. A conclusion that doesn't follow, a contradiction, circular reasoning, a clearly false fact or a made-up number earns little or nothing, however confidently it was stated. Take the 'Problems' list seriously.",
+  "- A bare denial is not a rebuttal. A rebuttal earns credit only for the reason it gives against the point it answers.",
+  "- Count every sound, distinct point: two or three sound, relevant points beat one point of the same quality, and one sound point beats several confused ones. Repetition and padding add nothing.",
+  "- A short, plain point backed by a real fact or a clear reason scores as high as a long, polished one.",
+  "",
+  "Score each debater on four criteria, 0 to 4 each (0 = missing or nonsensical, 1 = weak, 2 = adequate, 3 = strong, 4 = excellent):",
+  "- claim: Are the points clear, coherent and on topic?",
+  "- evidence: Are they backed by real facts, examples or sound reasoning? Unsupported assertions, a lone anecdote and vague appeals score low.",
+  "- rebuttal: Does it directly answer the point listed under 'Answering', with a reason? Judge how well it defeats that point.",
   "- relevance: Does it bear on the motion rather than a side issue?",
-  "If a debater's 'Answering' is 'nothing', give them rebuttal 2 and do not mention rebuttal for them.",
+  "If a debater's 'Answering' is 'nothing', give them rebuttal 2.",
   "Use the same standard for both debaters. Before you answer, check: would the scores flip if the two debaters swapped places? If not, fix them.",
   "",
+  "'notes' explains each of that debater's four scores in a short phrase (at most 14 words) about the points themselves, with no names or pronouns, e.g. evidence: \"Cites a real study, but the number is vague.\" If their 'Answering' is 'nothing', the rebuttal note is \"Opening statement: nothing to answer yet.\"",
   "Flag an obvious logical fallacy (straw man, ad hominem, false dilemma, slippery slope, etc.) by name in 'fallacy'; use an empty string if none. Clumsy wording is never a fallacy.",
   "'reason' is ONE short line about that debater's points, addressed to them in the second person, e.g. \"You asserted harm without evidence.\" Never comment on their grammar or style.",
   "'winningSummary' is one sentence summarizing the stronger argument, without naming the speaker.",
@@ -179,9 +187,9 @@ export const JUDGE_SYSTEM = [
 ].join("\n");
 
 function bullets(d: Distilled): string {
-  const part = (label: string, xs: string[]) =>
-    `${label}: ${xs.length ? xs.slice(0, DISTILL_MAX_BULLETS).map((x) => `\n  - ${x}`).join("") : "(none)"}`;
-  return [part("Claims", d.claims), part("Evidence", d.evidence), part("Rebuttals", d.rebuttals)].join("\n");
+  const part = (label: string, xs: string[] | undefined) =>
+    `${label}: ${xs?.length ? xs.slice(0, DISTILL_MAX_BULLETS).map((x) => `\n  - ${x}`).join("") : "(none)"}`;
+  return [part("Claims", d.claims), part("Evidence", d.evidence), part("Rebuttals", d.rebuttals), part("Problems", d.problems)].join("\n");
 }
 
 /** One debater as the judge sees them: their side, the opposing point they had to answer, and their own points. */
@@ -210,10 +218,20 @@ const turnScoreSchema: Schema = {
     evidence: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
     rebuttal: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
     relevance: { type: Type.INTEGER, minimum: 0, maximum: CRITERION_MAX },
+    notes: {
+      type: Type.OBJECT,
+      properties: {
+        claim: { type: Type.STRING },
+        evidence: { type: Type.STRING },
+        rebuttal: { type: Type.STRING },
+        relevance: { type: Type.STRING },
+      },
+      required: ["claim", "evidence", "rebuttal", "relevance"],
+    },
     reason: { type: Type.STRING },
     fallacy: { type: Type.STRING },
   },
-  required: ["claim", "evidence", "rebuttal", "relevance", "reason", "fallacy"],
+  required: ["claim", "evidence", "rebuttal", "relevance", "notes", "reason", "fallacy"],
 };
 
 export const judgeSchema: Schema = {
@@ -227,11 +245,16 @@ export const judgeSchema: Schema = {
   required: ["speaker1", "speaker2", "winningSummary", "verdict"],
 };
 
+/** The four criteria the judge scores (confidence is measured, not judged). */
+export type JudgedKey = Exclude<RubricKey, "confidence">;
+export const JUDGED_KEYS: JudgedKey[] = ["claim", "evidence", "rebuttal", "relevance"];
+
 export interface RawTurnScore {
   claim: number;
   evidence: number;
   rebuttal: number;
   relevance: number;
+  notes?: Partial<Record<JudgedKey, string>>;
   reason: string;
   fallacy: string;
 }
@@ -264,7 +287,7 @@ export const REPORT_SYSTEM = [
   "- rewrite: pick one of their weaker arguments; 'original' quotes it (trim to about 40 words), 'improved' rebuilds it to be stronger in the weakest category.",
   "- fallacies: logical fallacies the student committed, each with name, exchange number and a short quote. Empty array if none.",
   "- exercise: one 60-second practice drill targeting the weakest category, e.g. \"Back this claim with two pieces of evidence in 60 seconds: ...\".",
-  "Categories: claim, evidence, rebuttal and relevance judge the points made. confidence is measured from the student's voice: long pauses, filler words and stutters (typed turns get a neutral 2). Each category is scored 0 to 4.. If confidence is weakest, coach delivery: slowing down, pausing silently instead of saying 'um', and preparing a first sentence.",
+  "Categories: claim, evidence, rebuttal and relevance judge the points made. confidence is measured from the student's voice: long pauses, filler words and stutters (typed turns get a neutral 2). Each category is scored 0 to 4. If confidence is weakest, coach delivery: slowing down, pausing silently instead of saying 'um', and preparing a first sentence.",
 ].join("\n");
 
 export function reportPrompt(
