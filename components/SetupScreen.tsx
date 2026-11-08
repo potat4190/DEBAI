@@ -196,9 +196,8 @@ export default function SetupScreen({
                   className="grid w-full grid-cols-3"
                 >
                   {LEVELS.map((d) => (
-                    <ToggleGroupItem key={d} value={d} className="h-14 flex-col gap-1">
-                      <span>{d.toUpperCase()}</span>
-                      <span className="text-[10px] tracking-[1px] opacity-60">IQ {VOICE_PROFILES[d].iq}</span>
+                    <ToggleGroupItem key={d} value={d}>
+                      {d.toUpperCase()}
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>

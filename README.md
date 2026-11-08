@@ -1,145 +1,269 @@
-# DEB“AI” — Debate Trajectory Control
+<div align="left">
 
-A debate-prep game for HackRPI's "In the Clouds" theme. You debate an AI opponent (Gemini) while a separate AI judge scores every exchange. The better argument boosts that side's rocket toward the Moon, Mars, Jupiter or Saturn. First to arrive wins (or the closer rocket, if time runs out), then you get a skill tracker, the judge's score breakdown and a coaching report.
+#  DEB“AI”
+### Debate Trajectory Control
 
-**Play it live: https://debai-five.vercel.app**
+**Make your argument. Defend your position. Launch your rocket.**
 
-## How to play
+An AI-powered debate training game where stronger arguments propel your rocket through space. Debate a conversational AI opponent, receive transparent feedback from an independent AI judge, and race to the Moon, Mars, Jupiter, or Saturn.
 
-1. Pick or type a debate topic (23 built in), choose your side, the opponent and a destination. The opponent's difficulty is set as an IQ:
-   - **Easy · IQ 95**: an everyday reasoner. Makes sense, but keeps it simple: gut feelings, everyday examples, one point per reply, no studies or statistics, and a weak move about one reply in three.
-   - **Medium · IQ 110**: a bright, well-read person with clear points and mostly accurate facts, not a trained debater.
-   - **Hard · IQ 120**: a sharp analyst who brings precise evidence and goes after the weakest link in your argument.
-2. Optionally turn **Interruptions** on: the AI cuts in if you stall, and you can talk over it to cut it off. Headphones recommended.
-3. Press **START**, allow the microphone, and just talk. Your turn ends when you stop; the AI answers out loud.
-4. Each exchange is scored on claim, evidence, rebuttal, relevance and confidence (0–4 each, 20 per turn). The better turn fires an ignition burst, then its rocket climbs.
-5. The race ends when a rocket arrives, the exchanges run out, or the destination's time limit passes. The rocket closer to the destination wins; level on distance goes to the higher total score; level on both is a **draw** (the AI never wins a tie).
-6. Read your debrief: the skill tracker, the judge's breakdown of every exchange and your coaching report.
+**Built for HackRPI 2026 — “In the Clouds”**
 
-Each destination races two real rockets (yours first): Moon, Saturn V vs Atlas V; Mars, Starship vs Falcon Heavy; Jupiter, Titan IIIE vs Ariane 5; Saturn, SLS vs New Glenn.
+[**🎮 Play the Live Demo**](https://debai-five.vercel.app/)
 
-Use Chrome or Edge for live captions. Voice works in any browser that supports `MediaRecorder`; you can always type instead.
+</div>
+
+## The problem
+
+Traditional debate practice often depends on finding a partner, arranging time together, and getting useful feedback from a coach or judge. Practicing alone rarely recreates the pressure of a live exchange, and a simple chatbot conversation doesn't make progress easy to measure.
+
+**DEB“AI” makes debate practice available on demand.** It combines a responsive AI opponent, voice-based turn-taking, structured argument assessment, and a visual rocket race that makes each exchange matter.
+
+## What makes it different
+
+- **Debate by voice or text.** Speak naturally with hands-free turn detection or type your argument.
+- **Three opponent difficulties.** Choose Easy, Medium, or Hard, each with a distinct reasoning style.
+- **Optional live interruptions.** The opponent can interrupt hesitation; you can interrupt the opponent by speaking over it.
+- **Independent AI judging.** Arguments are evaluated separately from the AI opponent's responses.
+- **Bias-reduction pipeline.** Arguments are distilled into neutral points and judged twice with reversed speaker order.
+- **Real-time rocket race.** Argument scores determine speed, boosts, momentum, and stalls.
+- **Four destinations.** The Moon, Mars, Jupiter, and Saturn each offer different race lengths and limits.
+- **Detailed coaching.** Review category scores, fallacies, strong points, rewritten arguments, and a 60-second practice drill.
+- **Progress tracking.** See per-exchange performance and historical averages, with past debates saved locally.
+- **Simulation fallback.** Explore the experience even without configured AI credentials.
+
+## How it works
+
+1. **Set your mission:** choose one of 23 built-in topics or enter your own, pick FOR or AGAINST, select difficulty and a destination, and optionally enable interruptions.
+2. **Make your case:** talk into your microphone or type your argument. Spoken turns are transcribed through Fish Audio.
+3. **Hear the response:** Gemini generates a conversational counterargument; Fish Audio speaks it aloud as streamed sentences arrive.
+4. **Get scored:** a separate judging pipeline evaluates both sides across five criteria, each worth 0–4 points.
+5. **Watch the race:** scores translate into rocket movement. Strong turns create boosts; sustained strong turns build momentum; flagged fallacies reduce movement.
+6. **Review your results:** see the winner, judge explanations, skill charts, coaching report, and saved flight log.
+
+### Difficulty levels
+
+| Level | Profile | Behavior |
+| --- | --- | --- |
+| Easy | IQ 95 persona | Everyday reasoning, simple examples, occasional weak arguments |
+| Medium | IQ 110 persona | Clear, mostly accurate points from a well-read non-expert |
+| Hard | IQ 120 persona | Sharper analysis, more precise evidence, and targeted rebuttals |
+
+*The IQ numbers are in-game persona labels, not actual IQ measurements or scientific assessments.*
+
+### Missions
+
+| Destination | Distance | Max exchanges | Time limit | User rocket | AI rocket |
+| --- | ---: | ---: | ---: | --- | --- |
+| Moon | 240,000 mi | 6 | 9 min | Saturn V | Atlas V |
+| Mars | 140 million mi | 13 | 19.5 min | Starship | Falcon Heavy |
+| Jupiter | 390 million mi | 20 | 30 min | Titan IIIE | Ariane 5 |
+| Saturn | 790 million mi | 26 | 39 min | SLS | New Glenn |
+
+*Distances and speeds are gameplay parameters, not a physical spaceflight simulation.*
+
+## Scoring and fairness
+
+Each debater receives **up to 20 points per exchange**:
+
+| Criterion | Range | What it measures |
+| --- | --- | --- |
+| Claim | 0–4 | Clarity and soundness of the position |
+| Evidence | 0–4 | Relevant support and reasoning |
+| Rebuttal | 0–4 | How well the argument answers the opposing point |
+| Relevance | 0–4 | Whether the argument stays on the motion |
+| Confidence | 0–4 | Observable pauses, filler, and stuttering in spoken delivery |
+
+The judging pipeline is designed to focus on **the strength of ideas rather than polished wording**:
+
+1. Gemini independently distills each turn into short, neutral claims, evidence, and rebuttals, while preserving unsupported assertions and reasoning problems.
+2. The judge assesses the distilled arguments, not grammar, accent, length, or verbal polish.
+3. Two judging passes run in parallel with anonymous speaker labels in reversed order; their scores are averaged. A fallacy is counted only when both passes flag it.
+4. Confidence is calculated separately from speech signals. Typed turns receive a neutral confidence score of 2. Opening rebuttal scores also receive a neutral 2 because neither side has a previous argument to answer.
+5. Placeholder scores are excluded from relevant skill-average comparisons so they do not distort weakness tracking.
+
+These safeguards aim to reduce bias; they do **not** guarantee objective or perfectly consistent AI judgments.
+
+### Rocket movement
+
+The core race update is:
+
+```text
+V_next = V_current + (S × K) + (max(0, S − S_opponent) × B)
+D_next = D_current + (V_next × 60)
+```
+
+Where `S` is the debater's turn score out of 20, `K` is the destination's base acceleration multiplier, `B` is its winning-margin bonus, `V` is game velocity, and `D` is distance traveled. Destination-specific constants are defined in `lib/game.ts`.
+
+- **Momentum:** three consecutive strong turns (at least 15/20) add a `2K` bonus.
+- **Fallacy stall:** a flagged fallacy halves distance gained that turn.
+- **Victory:** first to reach the destination wins. If the exchange or time limit ends first, the closer rocket wins. Equal distance is broken by total score; equal distance and score is a draw.
+
+## Voice and interruptions
+
+The browser records spoken arguments with `MediaRecorder`, sends compressed audio to Fish Audio for transcription, and optionally displays live captions through the Web Speech API. **The Fish Audio transcript, not the live captions, is the official spoken argument used for judging.**
+
+Gemini's response is streamed sentence by sentence and voiced by Fish Audio. Optional interruptions support two-way conversational pressure: the AI may cut in when you stall or run long, while speaking over the AI for roughly half a second can stop its reply. Only the opponent's audible portion is judged after an interruption. Using headphones is recommended to avoid microphone feedback.
 
 ## Tech stack
 
-| Layer | Choice |
+| Layer | Technology |
 | --- | --- |
-| Framework | Next.js (React + TypeScript), API routes keep every key on the server |
-| Styling | Tailwind CSS v4 (tokens in `app/globals.css`) |
-| Components | shadcn/ui on Radix (`components/ui/`): toggle groups, tabs, accordion, chart, skeleton, empty states |
-| Charts | Recharts through the shadcn chart component (skill tracker) |
-| Animation | Motion (`motion/react`): boost choreography, idle engine flicker, scroll reveals; all of it respects reduced motion |
-| Game state | React `useReducer` (`lib/client/raceReducer.ts`) |
-| AI | Gemini via `@google/genai`: opponent, distiller, judge and report as separate routes returning JSON |
-| Voice output | Fish Audio TTS via `fetch` for the AI opponent only (`s2.1-pro`, or `s2.1-pro-free` while building) |
-| Voice input | Browser `MediaRecorder` → Fish Audio speech-to-text (`transcribe-1-pro`, audio-event tags off) |
-| Live captions | Browser Web Speech API, display only, never scored |
-| API keys | Rotation across up to four Fish Audio keys |
+| Web application | Next.js, React, TypeScript |
+| Styling | Tailwind CSS v4, shadcn/ui, Radix UI |
+| Animation | Motion (`motion/react`) |
+| Charts | Recharts |
+| Game state | React `useReducer` |
+| AI opponent, distillation, judge, coach | Gemini via `@google/genai` |
+| Speech-to-text and AI voice | Fish Audio |
+| Browser speech features | MediaRecorder, Web Speech API |
 | Hosting | Vercel |
-| Saved history | `localStorage` (flight log on the start screen) |
+| Debate history | Browser `localStorage` |
 
-## Run it
+### System architecture
 
-```bash
-npm install
-cp .env.example .env.local   # then fill in your keys
-npm run dev                  # http://localhost:3000
+```mermaid
+flowchart TD
+    A[Player: voice or text] --> B[Next.js client]
+    B --> C{Voice input?}
+    C -->|Yes| D[POST /api/stt: Fish Audio]
+    C -->|No| E[Typed argument]
+    D --> F[Official argument]
+    E --> F
+    F --> G[POST /api/opponent: Gemini]
+    G --> H[Streaming AI response]
+    H --> I[POST /api/tts: Fish Audio]
+    H --> J[Judging pipeline]
+    F --> J
+    J --> K[Neutral distillation]
+    K --> L[Two reversed-order judge passes]
+    L --> M[Scores and fallacy flags]
+    M --> N[Rocket physics and results]
+    N --> O[POST /api/report: Gemini coach]
+    N --> P[Local flight log]
 ```
 
-It runs without any keys:
+All external API keys are intended to stay in server-side Next.js routes.
 
-- **No `GEMINI_API_KEY`** → simulation mode: a canned opponent and a keyword-based judge, so you can click through the whole loop.
-- **No Fish Audio key** → text only: no voice and no spoken input.
+## Run locally
 
-The Start screen's top bar shows which integrations are linked.
+**Prerequisites:** Node.js and npm, plus optional Gemini and Fish Audio API credentials for the full AI/voice experience.
 
-## Deploy on Vercel
+```bash
+# Clone your repository
+ git clone <YOUR_REPOSITORY_URL>
+ cd <YOUR_REPOSITORY_FOLDER>
 
-The live site deploys from this repo: every push to `main` builds a new production deployment.
+# Install dependencies
+npm install
 
-To set up your own: import the GitHub repo at https://vercel.com/new (the project name must be lowercase, e.g. `debai`) and paste your `.env.local` into the Environment Variables field; Vercel splits it into separate variables. Without them the site still runs, in simulation mode. Keep in mind:
+# Create a local environment file
+cp .env.example .env.local
 
-- Functions have time limits, so Gemini calls use low thinking levels and the opponent's reply is streamed.
-- Request bodies are capped at 4.5 MB, so spoken turns are uploaded as compressed `webm`/`ogg` (32 kbps), never WAV.
-- The microphone only works over HTTPS, which Vercel provides (and `localhost` during development).
-- Fish Audio limits how many requests an account can run at once (5 on the Starter tier, shared by TTS and speech-to-text). The browser sends at most 3 voice requests at a time, and the server retries a busy (429) request on your other keys, then with a short backoff.
+# Start the development server
+npm run dev
+```
 
-## Environment variables
+Open **http://localhost:3000**. On Windows PowerShell, use `Copy-Item .env.example .env.local` instead of `cp` if needed.
+
+Without a Gemini key, the app uses a canned opponent and keyword-based simulation judge. Without Fish Audio credentials, voice input/output is unavailable and you can still type. The setup screen indicates integration status.
+
+### Environment variables
+
+Configure these in `.env.local` for local development or in your Vercel project's Environment Variables settings:
 
 | Variable | Purpose |
 | --- | --- |
-| `GEMINI_API_KEY` | Opponent, argument distiller, judge and post-debate report |
-| `GEMINI_MODEL` | Model for the opponent, distiller and report (default `gemini-3.8-flash`) |
-| `GEMINI_JUDGE_MODEL` | Model for the judge (defaults to `GEMINI_MODEL`) |
-| `FISH_AUDIO_API_KEYS` | Comma-separated Fish Audio keys, tried in order |
-| `FISH_AUDIO_API_KEY`, `_2`, `_3`, `_4` | The same keys as separate variables (either form works) |
-| `FISH_AUDIO_OPPONENT_VOICE_ID` | The custom voice shared by all three difficulties |
-| `FISH_AUDIO_MODEL` | TTS model header (default `s2.1-pro`). Must support `[bracket]` emotion cues: the S2 family or a Drama model, not `s1` |
-| `FISH_AUDIO_STT_MODEL` | Speech-to-text model header (default `transcribe-1-pro`) |
+| `GEMINI_API_KEY` | Gemini opponent, distiller, judge, and report |
+| `GEMINI_MODEL` | Opponent/distiller/report model; project default `gemini-3.8-flash` |
+| `GEMINI_JUDGE_MODEL` | Optional judge model override; otherwise uses `GEMINI_MODEL` |
+| `FISH_AUDIO_API_KEYS` | Comma-separated Fish Audio keys for rotation |
+| `FISH_AUDIO_API_KEY` | Alternative single-key configuration |
+| `FISH_AUDIO_API_KEY_2` through `_4` | Additional individual keys |
+| `FISH_AUDIO_OPPONENT_VOICE_ID` | Opponent voice ID |
+| `FISH_AUDIO_MODEL` | TTS model; default `s2.1-pro` |
+| `FISH_AUDIO_STT_MODEL` | Transcription model; default `transcribe-1-pro` |
 
-## Voice
+Do not commit `.env.local`, real keys, credentials, or private recordings. The TTS model must support the bracketed emotion cues used by the voice prompts.
 
-Fish Audio is called for exactly two things: the AI opponent's spoken reply (`/api/tts`) and the transcript of the user's spoken turn (`/api/stt`). There is no announcer.
+## Deploy to Vercel
 
-## How a round works
+1. Push the project to GitHub.
+2. Import it at [vercel.com/new](https://vercel.com/new).
+3. Add the required environment variables in the Vercel dashboard.
+4. Deploy. If your production branch is `main`, subsequent pushes can trigger production deployments.
+5. Test microphone permission, speech transcription, AI responses, judging, and the full results flow on the deployed HTTPS site.
 
-1. **Your turn** (90 s timer): take a moment to think, then start talking. The mic opens by itself each turn (hands-free) and your turn ends when you stop talking: about 3.5 s of silence (2.2–3 s with interruptions on, depending on difficulty), or longer if you trail off on "and…" or "um…". The browser records with `MediaRecorder` while live captions show your words; the recording then goes to `POST /api/stt` and the Fish Audio transcript becomes your official argument. Tap the mic button to switch hands-free off, or type in the text box and press **TRANSMIT**.
-2. **Opponent** — `POST /api/opponent`: Gemini answers like a person in conversation: 2–4 sentences that react to what you just said, with fillers ("um", "I mean"), restarts ("it's- it's not") and sound cues (`[short pause]`, `[breath]`) tuned per difficulty. Sentences stream as NDJSON and each is voiced by Fish Audio as soon as it arrives. A short pre-voiced "Hmm" or "Right, so…" often plays the moment you stop talking, to cover the wait. The reply is capped at about 75 words, not counting fillers.
-3. **Judge** — `POST /api/judge`, run in the background once the AI has spoken, so your next turn starts straight away and the rockets boost when the scores land. It scores the points made, never the delivery:
-   - Each turn is rewritten in its own Gemini call as at most 3 short, neutral bullets per category (claims / evidence / rebuttals). Grammar, spelling, polish, length and filler are stripped, so a messy spoken turn and a polished one look the same. The rewrite never repairs the reasoning: a bare denial stays "Denies X, gives no reason", a single personal story is marked as an anecdote, and up to 3 reasoning problems (a conclusion that doesn't follow, a contradiction, a false fact or made-up number, answering a different point, drifting off the topic) are listed for the judge.
-   - The judge scores claim, evidence, rebuttal and relevance (0–4 each) on substance alone, ignoring grammar, fluency and length. A point has to make sense to earn credit, a bare denial isn't a rebuttal, and sound points are counted: two or three sound points beat one, and one sound point beats several confused ones. It flags fallacies and writes a short reason for every category, shown in the results breakdown.
-   - **Confidence** (the fifth criterion, 0–4) is measured, not judged: long pauses (1.5 s or more mid-turn, from the mic), filler words and stutters (from the transcript and live captions), counted per 100 words. The AI opponent is measured the same way from its voiced text, so the hesitant Easy bot scores lower. Typed turns get a neutral 2. A turn is out of 20 (5 criteria × 4 points).
-   - Each debater is shown with the exact point they had to answer. On the opening exchange neither side has anything to rebut, so both get rebuttal 2 and both turns are treated as standalone statements.
-   - The judge runs twice in parallel, with the speakers listed in opposite orders under anonymous labels. The scores are averaged, and a fallacy only counts if both runs flag it.
-4. **Interruptions** (optional, chosen on the start screen): either side can cut the other off. Use headphones: with speakers, the AI's own voice can reach the mic and count as you talking over it.
-   - **The AI cuts you off** if you don't start talking, hesitate too much (pauses of about 1 s or more, plus fillers and stutters seen in the live captions) or run long. It plays a pre-voiced line ("Let me stop you there."), and its reply carries on from it. A patience bar shows how close it is to cutting in. Being cut off has no extra penalty: you're scored on what you said.
-   - **You cut the AI off** by talking over it for about half a second. It stops mid-sentence, only the sentences you heard are judged, and your turn starts recording straight away.
-5. **Boost**: `V += S·K + max(0, S−S_opp)·B`, then `D += V·60`, using the 20-point turn score directly, so the destination constants work as designed. A streak of 3 strong turns (≥15 of 20) adds a momentum bonus of 2K. A fallacy stalls the rocket, so it covers half its distance that turn. On screen, the stronger turn's engines flare white-hot with a shockwave and sparks, the track shakes, and the rocket springs up its trail; between boosts the flames keep flickering.
-6. **End of the race**: a rocket arrives, the destination's max exchanges run out, or its real-time limit passes (9 minutes for the Moon up to 39 for Saturn). When time runs out, a turn in progress is dropped, exchanges already spoken are still scored, then the closer rocket wins. Level on distance goes to the higher total score; level on both is a draw.
-7. **Results**:
-   - **Skill tracker**: your score against the AI's for each exchange (total or any one category), plus your average per exchange across saved debates.
-   - **Averages per category**, you against the AI, counting only measured scores: rebuttal on the opening exchange and confidence on a typed turn get a fixed placeholder 2, so they're left out and never become your "weakest" category.
-   - **Judge's breakdown**: every exchange, both sides, each category's 0–4 score with the judge's reason.
-   - **Coach's report** — `POST /api/report`: strong points, the weakest category, an argument rewrite, fallacies and a 60-second practice drill.
-   - The debate is saved to the flight log on the start screen (won, lost or drawn).
+**Deployment considerations:** serverless function duration limits; compressed `webm`/`ogg` audio uploads to stay under the 4.5 MB request-body cap; Fish Audio concurrency/rate limits; and retry handling for transient Gemini/Fish Audio errors. The implementation supports multiple Fish Audio keys and limited concurrent voice requests.
 
-## Code map
+## Project structure
 
-| Path | What it holds |
-| --- | --- |
-| `lib/game.ts` | Destinations (distance, base speed, K, B, limits), physics, win and draw rules, mood engine, voice profiles (IQ 95 / 110 / 120), the 23 topics |
-| `lib/server/prompts.ts` | Every Gemini prompt and JSON schema |
-| `lib/server/gemini.ts` | Gemini client with JSON output, streaming, per-model thinking settings and retries on 503/429 |
-| `lib/server/fish.ts` | Fish Audio TTS (opponent voice), speech-to-text (user's turn) and key rotation |
-| `lib/server/mock.ts` | Simulation mode used when there's no Gemini key |
-| `app/api/*` | `opponent` (streaming), `judge`, `report`, `tts` (audio proxy), `stt` (transcription), `status` |
-| `components/SetupScreen.tsx` | Screen 1: topic, side, opponent IQ, callsign, destination, flight log |
-| `components/RaceScreen.tsx` | Screen 2: race clock, telemetry, comms panel, live timeline, time-up ending |
-| `components/RaceTrack.tsx` | The track: rocket climb, ignition burst, contrails, track shake |
-| `components/ResultsScreen.tsx` | Screen 3: outcome (win, loss or draw), averages, judge's breakdown, coach's report |
-| `components/SkillTracker.tsx` | Skill tracker charts (this debate and progress across debates) |
-| `components/visuals.tsx` | The eight rocket designs and their exhaust (idle flicker, burn, blast, stall), planets, scrolling starfield and Earth horizon |
-| `components/reveal.tsx` | Scroll-in fade-up helpers |
-| `components/hud.tsx` | Shared HUD buttons, fields, labels and panel corners |
-| `components/ui/` | shadcn/ui components |
-| `lib/client/raceReducer.ts` | Race state and transitions (`useReducer`) |
-| `lib/client/api.ts` | JSON calls and the opponent stream reader |
-| `lib/client/audio.ts` | Speech queue: plays sentences in order while more arrive |
-| `lib/client/useRecorder.ts` | `MediaRecorder` capture and upload to `/api/stt` |
-| `lib/client/useLiveCaptions.ts` | Web Speech API live captions |
-| `lib/client/voiceActivity.ts` | Mic-level voice detection (are you talking? talking over the AI?) |
-| `lib/client/turnMonitor.ts` | End-of-turn and cut-in rules (pure functions) |
-| `lib/client/history.ts` | Flight log in `localStorage` |
+```text
+app/
+  api/                 # opponent, judge, report, tts, stt, status
+  globals.css          # Tailwind tokens and global styles
+components/
+  SetupScreen.tsx      # Topic, side, difficulty, mission, flight log
+  RaceScreen.tsx       # Debate turns, timer, telemetry
+  RaceTrack.tsx        # Rocket movement and boost effects
+  ResultsScreen.tsx    # Scores, verdict, feedback
+  SkillTracker.tsx     # Performance charts
+  visuals.tsx          # Rockets, planets, space visuals
+  hud.tsx              # Shared interface components
+  reveal.tsx           # Scroll reveal helpers
+  ui/                  # shadcn/ui components
+lib/
+  game.ts              # Game rules, topics, destinations, physics
+  client/
+    raceReducer.ts     # Client state machine
+    api.ts             # API requests and stream handling
+    audio.ts           # Speech playback queue
+    useRecorder.ts     # Microphone recording
+    useLiveCaptions.ts # Browser captions
+    voiceActivity.ts   # Voice activity detection
+    turnMonitor.ts     # Turn-end and interruption logic
+    history.ts         # Local flight log
+  server/
+    prompts.ts         # Gemini prompts and schemas
+    gemini.ts          # Gemini client and retries
+    fish.ts            # TTS, STT, key rotation
+    mock.ts            # Keyless simulation
+```
 
-## Tuning
+## Engineering highlights
 
-- **Difficulty**: `VOICE_PROFILES` in `lib/game.ts`. Each profile has an `iq`, a one-line `vibe` shown on the start screen, and the persona prompt: Easy (IQ 95) an everyday reasoner who keeps to one simple point and makes a weak move about one reply in three, Medium (IQ 110) a bright, well-read non-debater, Hard (IQ 120) a sharp analyst
-- **Race time limits**: `maxMinutes` on each destination in `lib/game.ts`
-- **Boost animation timing**: `BOOST_SECONDS` and `BLAST_SECONDS` in `components/RaceTrack.tsx`
-- **Confidence formula**: `confidenceScore`, `LONG_PAUSE_MS` and `TYPED_CONFIDENCE` in `lib/game.ts`
-- **When the AI gets heated** (at most 2 times per debate): `pickMood` in `lib/game.ts`
-- **Momentum and stall strength**: `STRONG_TURN`, `STREAK_LENGTH`, `MOMENTUM_K_MULTIPLIER`, `STALL_FACTOR`
-- **Turn timer**: `TURN_SECONDS`
-- **How human the AI sounds**: `disfluency` in each `VOICE_PROFILES` entry; its cut-in and "thinking" lines are in `lines`
-- **Turn-taking and interruptions**: `timing` in each `VOICE_PROFILES` entry (start grace, end-of-turn silence, hesitations allowed, longest turn), plus `PATIENT_END_SILENCE_MS`, `PAUSE_MS`, `MIN_TALK_BEFORE_CUTOFF_MS` and `BARGE_IN_MS` in `lib/game.ts`. Mic sensitivity is in `lib/client/voiceActivity.ts`
-- **Gemini speed vs depth**: the `thinking` option on each call (`minimal` for the opponent and distiller, `low` for the judge and report)
+- **Streaming responses and audio playback** reduce perceived delay between the player's argument and the AI's reply.
+- **Asynchronous judging** lets the next turn begin while scores are being calculated.
+- **Pure turn-monitoring functions** separate voice interruption logic from UI rendering.
+- **Reducer-driven race state** coordinates turn transitions, scoring, rocket progress, and end conditions.
+- **Server-side API routes** keep provider credentials away from browser code.
+- **Reduced-motion support** makes intensive rocket animations more accessible.
+- **Local-first history** avoids requiring a user account for saved debate results.
+
+## Limitations and future improvements
+
+AI judgments may be inconsistent or factually wrong; the project is a **practice tool**, not a certified debate evaluation system. Voice recognition, interruptions, and confidence measurements can vary by browser, microphone quality, and background noise. Browser-local history does not sync between devices.
+
+Potential next steps include verified evidence citations, multiplayer debates, user-controlled judging rubrics, exportable coaching reports, and optional cloud-synced progress. These are **ideas, not current features**.
+
+## Hackathon theme: In the Clouds
+
+DEB“AI” interprets the theme in two ways: the game visually launches rockets through clouds and into space, while cloud-hosted AI models provide the opponent, assessment, and coaching. The result turns an abstract learning exercise into a visible, competitive experience.
+
+## Credits
+
+Created for **HackRPI 2026**. Built with Gemini, Fish Audio, Next.js, and Vercel.
+
+> **Project team:** Add contributor names and GitHub profile links here before publishing.
+>
+> **License:** Add a `LICENSE` file and specify the license here if you want to make reuse terms explicit.
+
+---
+
+<div align="center">
+
+**Your words are your fuel. How far can your argument take you?**
+
+[Launch DEB“AI”](https://debai-five.vercel.app/)
+
+</div>
